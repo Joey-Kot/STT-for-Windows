@@ -1,7 +1,5 @@
 package main
 
-// stt.go - Go rewrite of the provided Python stt.py
-//
 // Features implemented:
 // - JSON config file support (-config)
 // - Command-line flags override config values
