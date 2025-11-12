@@ -29,6 +29,7 @@ package main
 import (
     "bytes"
     "crypto/tls"
+    "encoding/hex"
     "encoding/json"
     "flag"
     "fmt"
@@ -44,6 +45,7 @@ import (
     "sync"
     "syscall"
     "time"
+    "unicode/utf8"
     "unsafe"
 
     "github.com/atotto/clipboard"
@@ -1015,7 +1017,7 @@ func sendAudioWithRetry(filePath string) (bool, []byte) {
             return true, res
         } else {
             if cfg.UPLOAD_DEBUG {
-                fmt.Printf("[upload] attempt %d failed: %v\n", try, res)
+                fmt.Printf("[upload] attempt %d failed: %s\n", try, formatResponse(res))
             }
             if try >= cfg.MaxRetry {
                 fmt.Printf("[upload] exceeded max retries (%d)\n", cfg.MaxRetry)
@@ -1125,6 +1127,32 @@ func doUpload(filePath string) (bool, []byte) {
         return false, respBody
     }
     return true, respBody
+}
+
+func formatResponse(b []byte) string {
+    // human-friendly formatter for response bodies used in debug logs.
+    // - empty -> "<empty>"
+    // - valid UTF-8 -> return string (truncated if too long)
+    // - otherwise -> show hex prefix (truncated) with length info
+    if len(b) == 0 {
+        return "<empty>"
+    }
+
+    const maxText = 1000   // max chars to show for text responses
+    const maxBin = 256     // max bytes to hex-encode for binary responses
+
+    if utf8.Valid(b) {
+        s := string(b)
+        if len(s) > maxText {
+            return fmt.Sprintf("%s... (truncated, total %d bytes)", s[:maxText], len(b))
+        }
+        return s
+    }
+
+    if len(b) > maxBin {
+        return fmt.Sprintf("<binary %d bytes, prefix hex: %s...>", len(b), hex.EncodeToString(b[:maxBin]))
+    }
+    return fmt.Sprintf("<binary %d bytes, hex: %s>", len(b), hex.EncodeToString(b))
 }
 
 func extractTextFromResponse(body []byte) string {
