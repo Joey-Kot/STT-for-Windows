@@ -14,7 +14,7 @@
 - 上传重试机制（可配置重试次数与基准延迟）。
 - 支持通过 ExtraConfig 合并自定义字段到上传请求中，可以通过该选项注入任意参数。
 - 自动将识别结果写入剪贴板并模拟 Ctrl+V 粘贴（使用 keybd_event）。
-- 可选 Windows 通知。
+- 可选 Windows 通知（建议不要开启，会引入不必要的延迟）。
 - 两种热键绑定方式：RegisterHotKey（注册全局热键）或 WH_KEYBOARD_LL 低级键盘钩子（HotKeyHook）。
 - 可选将录音与响应保存到缓存目录（cache-dir 与 keep-cache）。
 
