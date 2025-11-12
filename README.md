@@ -128,7 +128,7 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 - CONTAINER (string) — 容器（"ogg"）
 - REQUEST_TIMEOUT (int) — 请求超时（秒，30）
 - MAX_RETRY (int) — 上传最大重试次数（3）
-- RETRY_BASE_DELAY (float) — 指数退避基准秒（0.5）
+- RETRY_BASE_DELAY (float) — 重试间隔基准秒（0.5）
 - ENABLE_HTTP2 (bool) — 是否启用 HTTP/2（true）
 - VERIFY_SSL (bool) — 是否验证 SSL（true）
 - HOTKEY_HOOK (bool) — 是否使用低级钩子（false）
