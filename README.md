@@ -38,7 +38,7 @@ Windows（开发 / 动态链接）——快速上手
 4. 构建（动态方式，适合开发与调试）:
 
 ```bash
-   go build -o stt.exe main.go
+   go build -o stt.exe
 ```
 
 ### 在 Linux 环境下交叉编译以生成 Windows 静态可执行文件（包含交叉编译 PortAudio 并静态链接）
@@ -95,7 +95,7 @@ go mod tidy
 6. 交叉静态构建 stt.exe（尝试让链接器进行静态链接）
 
 ```bash
-PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe main.go
+PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 ```
 
 #### 注意与故障排除
