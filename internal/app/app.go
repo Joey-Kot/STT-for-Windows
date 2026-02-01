@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -88,6 +89,16 @@ func RunRecordMode(cfg config.Config) error {
 					fmt.Printf("[upload] failed: %v\n", err)
 					if cfg.Notification {
 						notify.Notify("STT", "Upload failed")
+					}
+					if cfg.RequestFailedNotification {
+						var re *asr.RetryExhaustedError
+						if errors.As(err, &re) {
+							if err := clipboard.PasteText("[request failed]"); err != nil {
+								fmt.Printf("[paste] failed: %v\n", err)
+							} else if cfg.Notification {
+								notify.Notify("STT", "Request failed")
+							}
+						}
 					}
 				} else if text == "" {
 					fmt.Println("[upload] empty result")

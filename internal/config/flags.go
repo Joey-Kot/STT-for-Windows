@@ -9,64 +9,66 @@ import (
 
 // FlagValues holds parsed flags with explicit set tracking.
 type FlagValues struct {
-	APIEndpoint            string
-	APIEndpointSet         bool
-	Token                  string
-	TokenSet               bool
-	Model                  string
-	ModelSet               bool
-	Language               string
-	LanguageSet            bool
-	Prompt                 string
-	PromptSet              bool
-	TEXTPath               string
-	TEXTPathSet            bool
-	ExtraConfig            string
-	ExtraConfigSet         bool
-	Channels               int
-	ChannelsSet            bool
-	SAMPLING_RATE          int
-	SAMPLING_RATESet       bool
-	SAMPLING_RATE_DEPTH    int
-	SAMPLING_RATE_DEPTHSet bool
-	BIT_RATE               int
-	BIT_RATESet            bool
-	CODECS                 string
-	CODECSSet              bool
-	CONTAINER              string
-	CONTAINERSet           bool
-	RequestTimeout         int
-	RequestTimeoutSet      bool
-	MaxRetry               int
-	MaxRetrySet            bool
-	RetryBaseDelay         float64
-	RetryBaseDelaySet      bool
-	EnableHTTP2            bool
-	EnableHTTP2Set         bool
-	VerifySSL              bool
-	VerifySSLSet           bool
-	HotKeyHook             bool
-	HotKeyHookSet          bool
-	StartKey               string
-	StartKeySet            bool
-	PauseKey               string
-	PauseKeySet            bool
-	CancelKey              string
-	CancelKeySet           bool
-	CacheDir               string
-	CacheDirSet            bool
-	KeepCache              bool
-	KeepCacheSet           bool
-	Notification           bool
-	NotificationSet        bool
-	FFMPEG_DEBUG           bool
-	FFMPEG_DEBUGSet        bool
-	RECORD_DEBUG           bool
-	RECORD_DEBUGSet        bool
-	HOTKEY_DEBUG           bool
-	HOTKEY_DEBUGSet        bool
-	UPLOAD_DEBUG           bool
-	UPLOAD_DEBUGSet        bool
+	APIEndpoint                  string
+	APIEndpointSet               bool
+	Token                        string
+	TokenSet                     bool
+	Model                        string
+	ModelSet                     bool
+	Language                     string
+	LanguageSet                  bool
+	Prompt                       string
+	PromptSet                    bool
+	TEXTPath                     string
+	TEXTPathSet                  bool
+	ExtraConfig                  string
+	ExtraConfigSet               bool
+	Channels                     int
+	ChannelsSet                  bool
+	SAMPLING_RATE                int
+	SAMPLING_RATESet             bool
+	SAMPLING_RATE_DEPTH          int
+	SAMPLING_RATE_DEPTHSet       bool
+	BIT_RATE                     int
+	BIT_RATESet                  bool
+	CODECS                       string
+	CODECSSet                    bool
+	CONTAINER                    string
+	CONTAINERSet                 bool
+	RequestTimeout               int
+	RequestTimeoutSet            bool
+	MaxRetry                     int
+	MaxRetrySet                  bool
+	RetryBaseDelay               float64
+	RetryBaseDelaySet            bool
+	EnableHTTP2                  bool
+	EnableHTTP2Set               bool
+	VerifySSL                    bool
+	VerifySSLSet                 bool
+	HotKeyHook                   bool
+	HotKeyHookSet                bool
+	StartKey                     string
+	StartKeySet                  bool
+	PauseKey                     string
+	PauseKeySet                  bool
+	CancelKey                    string
+	CancelKeySet                 bool
+	CacheDir                     string
+	CacheDirSet                  bool
+	KeepCache                    bool
+	KeepCacheSet                 bool
+	Notification                 bool
+	NotificationSet              bool
+	RequestFailedNotification    bool
+	RequestFailedNotificationSet bool
+	FFMPEG_DEBUG                 bool
+	FFMPEG_DEBUGSet              bool
+	RECORD_DEBUG                 bool
+	RECORD_DEBUGSet              bool
+	HOTKEY_DEBUG                 bool
+	HOTKEY_DEBUGSet              bool
+	UPLOAD_DEBUG                 bool
+	UPLOAD_DEBUGSet              bool
 
 	OutputPath    string
 	OutputPathSet bool
@@ -219,6 +221,7 @@ func BindFlags(fs *flag.FlagSet) *FlagValues {
 	fs.Var(&boolFlag{&fv.KeepCache, &fv.KeepCacheSet}, "keep-cache", "keep cache files (true/false)")
 
 	fs.Var(&boolFlag{&fv.Notification, &fv.NotificationSet}, "notification", "enable notifications (true/false)")
+	fs.Var(&boolFlag{&fv.RequestFailedNotification, &fv.RequestFailedNotificationSet}, "request-failed-notification", "paste [request failed] after retry exhaustion in record mode (true/false)")
 	fs.Var(&boolFlag{&fv.FFMPEG_DEBUG, &fv.FFMPEG_DEBUGSet}, "ffmpeg-debug", "enable ffmpeg debug output (true/false)")
 	fs.Var(&boolFlag{&fv.RECORD_DEBUG, &fv.RECORD_DEBUGSet}, "record-debug", "enable record debug output (true/false)")
 	fs.Var(&boolFlag{&fv.HOTKEY_DEBUG, &fv.HOTKEY_DEBUGSet}, "hotkey-debug", "enable hotkey debug output (true/false)")
@@ -311,6 +314,9 @@ func ApplyFlags(cfg *Config, fv *FlagValues) {
 	if fv.NotificationSet {
 		cfg.Notification = fv.Notification
 	}
+	if fv.RequestFailedNotificationSet {
+		cfg.RequestFailedNotification = fv.RequestFailedNotification
+	}
 	if fv.FFMPEG_DEBUGSet {
 		cfg.FFMPEG_DEBUG = fv.FFMPEG_DEBUG
 	}
@@ -352,6 +358,7 @@ func (fv *FlagValues) AnySet() bool {
 		fv.CacheDirSet ||
 		fv.KeepCacheSet ||
 		fv.NotificationSet ||
+		fv.RequestFailedNotificationSet ||
 		fv.FFMPEG_DEBUGSet ||
 		fv.RECORD_DEBUGSet ||
 		fv.HOTKEY_DEBUGSet ||

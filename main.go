@@ -87,6 +87,8 @@ func usage() {
 [系统通知配置]
   -notification <true|false>
         是否启用 Windows 通知（默认开启）
+  -request-failed-notification <true|false>
+        仅录音模式下：上传重试耗尽后，粘贴占位符 [request failed]（默认关闭）
 
 [DEBUG 配置]
   -ffmpeg-debug <true|false>

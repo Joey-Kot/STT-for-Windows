@@ -25,6 +25,17 @@ type Client struct {
 	extraConfigMap map[string]interface{}
 }
 
+// RetryExhaustedError indicates upload retries reached the configured limit.
+type RetryExhaustedError struct {
+	MaxRetry     int
+	Attempts     int
+	LastResponse []byte
+}
+
+func (e *RetryExhaustedError) Error() string {
+	return fmt.Sprintf("exceeded max retries (%d), attempts: %d", e.MaxRetry, e.Attempts)
+}
+
 // New creates a new ASR client and parses ExtraConfig.
 func New(cfg config.Config, httpClient *http.Client) (*Client, error) {
 	c := &Client{cfg: cfg, httpClient: httpClient}
@@ -60,7 +71,11 @@ func (c *Client) Transcribe(ctx context.Context, filePath string) (string, []byt
 			fmt.Printf("[upload] attempt %d failed: %s\n", try, formatResponse(res))
 		}
 		if try >= c.cfg.MaxRetry {
-			return "", lastResp, fmt.Errorf("exceeded max retries (%d)", c.cfg.MaxRetry)
+			return "", lastResp, &RetryExhaustedError{
+				MaxRetry:     c.cfg.MaxRetry,
+				Attempts:     try,
+				LastResponse: lastResp,
+			}
 		}
 		time.Sleep(time.Duration(delay * float64(time.Second)))
 		delay *= 2

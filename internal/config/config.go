@@ -10,69 +10,71 @@ import (
 
 // Config holds configurable parameters.
 type Config struct {
-	APIEndpoint         string  `json:"API_ENDPOINT"`
-	Token               string  `json:"TOKEN"`
-	Model               string  `json:"MODEL"`
-	Language            string  `json:"LANGUAGE"`
-	Prompt              string  `json:"PROMPT"`
-	TEXTPath            string  `json:"TEXT_PATH"`
-	ExtraConfig         string  `json:"ExtraConfig"`
-	Channels            int     `json:"CHANNELS"`
-	SAMPLING_RATE       int     `json:"SAMPLING_RATE"`
-	SAMPLING_RATE_DEPTH int     `json:"SAMPLING_RATE_DEPTH"`
-	BIT_RATE            int     `json:"BIT_RATE"`
-	CODECS              string  `json:"CODECS"`
-	CONTAINER           string  `json:"CONTAINER"`
-	RequestTimeout      int     `json:"REQUEST_TIMEOUT"`
-	MaxRetry            int     `json:"MAX_RETRY"`
-	RetryBaseDelay      float64 `json:"RETRY_BASE_DELAY"`
-	EnableHTTP2         bool    `json:"ENABLE_HTTP2"`
-	VerifySSL           bool    `json:"VERIFY_SSL"`
-	HotKeyHook          bool    `json:"HOTKEY_HOOK"`
-	StartKey            string  `json:"START_KEY"`
-	PauseKey            string  `json:"PAUSE_KEY"`
-	CancelKey           string  `json:"CANCEL_KEY"`
-	CacheDir            string  `json:"CACHE_DIR"`
-	KeepCache           bool    `json:"KEEP_CACHE"`
-	Notification        bool    `json:"NOTIFICATION"`
-	FFMPEG_DEBUG        bool    `json:"FFMPEG_DEBUG"`
-	RECORD_DEBUG        bool    `json:"RECORD_DEBUG"`
-	HOTKEY_DEBUG        bool    `json:"HOTKEY_DEBUG"`
-	UPLOAD_DEBUG        bool    `json:"UPLOAD_DEBUG"`
+	APIEndpoint               string  `json:"API_ENDPOINT"`
+	Token                     string  `json:"TOKEN"`
+	Model                     string  `json:"MODEL"`
+	Language                  string  `json:"LANGUAGE"`
+	Prompt                    string  `json:"PROMPT"`
+	TEXTPath                  string  `json:"TEXT_PATH"`
+	ExtraConfig               string  `json:"ExtraConfig"`
+	Channels                  int     `json:"CHANNELS"`
+	SAMPLING_RATE             int     `json:"SAMPLING_RATE"`
+	SAMPLING_RATE_DEPTH       int     `json:"SAMPLING_RATE_DEPTH"`
+	BIT_RATE                  int     `json:"BIT_RATE"`
+	CODECS                    string  `json:"CODECS"`
+	CONTAINER                 string  `json:"CONTAINER"`
+	RequestTimeout            int     `json:"REQUEST_TIMEOUT"`
+	MaxRetry                  int     `json:"MAX_RETRY"`
+	RetryBaseDelay            float64 `json:"RETRY_BASE_DELAY"`
+	EnableHTTP2               bool    `json:"ENABLE_HTTP2"`
+	VerifySSL                 bool    `json:"VERIFY_SSL"`
+	HotKeyHook                bool    `json:"HOTKEY_HOOK"`
+	StartKey                  string  `json:"START_KEY"`
+	PauseKey                  string  `json:"PAUSE_KEY"`
+	CancelKey                 string  `json:"CANCEL_KEY"`
+	CacheDir                  string  `json:"CACHE_DIR"`
+	KeepCache                 bool    `json:"KEEP_CACHE"`
+	Notification              bool    `json:"NOTIFICATION"`
+	RequestFailedNotification bool    `json:"Request_Failed_Notification"`
+	FFMPEG_DEBUG              bool    `json:"FFMPEG_DEBUG"`
+	RECORD_DEBUG              bool    `json:"RECORD_DEBUG"`
+	HOTKEY_DEBUG              bool    `json:"HOTKEY_DEBUG"`
+	UPLOAD_DEBUG              bool    `json:"UPLOAD_DEBUG"`
 }
 
 // DefaultConfig returns a Config with default values.
 func DefaultConfig() Config {
 	return Config{
-		APIEndpoint:         "",
-		Token:               "",
-		Model:               "",
-		Language:            "",
-		Prompt:              "",
-		TEXTPath:            "text",
-		ExtraConfig:         "",
-		Channels:            1,
-		SAMPLING_RATE:       16000,
-		SAMPLING_RATE_DEPTH: 16,
-		BIT_RATE:            128,
-		CODECS:              "opus",
-		CONTAINER:           "ogg",
-		RequestTimeout:      30,
-		MaxRetry:            3,
-		RetryBaseDelay:      0.5,
-		EnableHTTP2:         true,
-		VerifySSL:           true,
-		HotKeyHook:          false,
-		StartKey:            "alt+q",
-		PauseKey:            "alt+s",
-		CancelKey:           "esc",
-		CacheDir:            "",
-		KeepCache:           false,
-		Notification:        false,
-		FFMPEG_DEBUG:        false,
-		RECORD_DEBUG:        false,
-		HOTKEY_DEBUG:        true,
-		UPLOAD_DEBUG:        false,
+		APIEndpoint:               "",
+		Token:                     "",
+		Model:                     "",
+		Language:                  "",
+		Prompt:                    "",
+		TEXTPath:                  "text",
+		ExtraConfig:               "",
+		Channels:                  1,
+		SAMPLING_RATE:             16000,
+		SAMPLING_RATE_DEPTH:       16,
+		BIT_RATE:                  128,
+		CODECS:                    "opus",
+		CONTAINER:                 "ogg",
+		RequestTimeout:            30,
+		MaxRetry:                  3,
+		RetryBaseDelay:            0.5,
+		EnableHTTP2:               true,
+		VerifySSL:                 true,
+		HotKeyHook:                false,
+		StartKey:                  "alt+q",
+		PauseKey:                  "alt+s",
+		CancelKey:                 "esc",
+		CacheDir:                  "",
+		KeepCache:                 false,
+		Notification:              false,
+		RequestFailedNotification: false,
+		FFMPEG_DEBUG:              false,
+		RECORD_DEBUG:              false,
+		HOTKEY_DEBUG:              true,
+		UPLOAD_DEBUG:              false,
 	}
 }
 
