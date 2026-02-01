@@ -136,7 +136,7 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 - CACHE_DIR (string) — 缓存目录路径（空则使用当前目录）
 - KEEP_CACHE (bool) — 是否保存录音与响应（false）
 - NOTIFICATION (bool) — 是否启用通知（true）
-- Request_Failed_Notification (bool) — 仅录音模式下：重试耗尽后粘贴占位符（false）
+- REQUEST_FAILED_NOTIFICATION (bool) — 仅录音模式下：重试耗尽后粘贴占位符（false）
 - FFMPEG_DEBUG, RECORD_DEBUG, HOTKEY_DEBUG, UPLOAD_DEBUG (bool) — 各类调试开关
 
 ## 命令行参数

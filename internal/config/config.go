@@ -35,7 +35,7 @@ type Config struct {
 	CacheDir                  string  `json:"CACHE_DIR"`
 	KeepCache                 bool    `json:"KEEP_CACHE"`
 	Notification              bool    `json:"NOTIFICATION"`
-	RequestFailedNotification bool    `json:"Request_Failed_Notification"`
+	RequestFailedNotification bool    `json:"REQUEST_FAILED_NOTIFICATION"`
 	FFMPEG_DEBUG              bool    `json:"FFMPEG_DEBUG"`
 	RECORD_DEBUG              bool    `json:"RECORD_DEBUG"`
 	HOTKEY_DEBUG              bool    `json:"HOTKEY_DEBUG"`
