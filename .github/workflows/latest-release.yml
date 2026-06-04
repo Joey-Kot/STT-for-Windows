@@ -1,0 +1,106 @@
+name: Build and Publish Latest
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: latest-release
+  cancel-in-progress: true
+
+jobs:
+  build:
+    name: Build Windows Release
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      - name: Install build dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            autoconf \
+            automake \
+            build-essential \
+            git \
+            libasound2-dev \
+            libtool \
+            mingw-w64 \
+            pkg-config \
+            portaudio19-dev
+
+      - name: Test
+        run: go test ./...
+
+      - name: Build PortAudio for Windows
+        run: |
+          mkdir -p build
+          git clone --depth 1 --branch v19.7.0 https://github.com/PortAudio/portaudio.git build/portaudio
+          cd build/portaudio
+          ./configure \
+            --host=x86_64-w64-mingw32 \
+            --prefix="$GITHUB_WORKSPACE/build/portaudio-win" \
+            --disable-shared \
+            --enable-static \
+            CC=x86_64-w64-mingw32-gcc
+          make -j"$(nproc)"
+          make install
+
+      - name: Build Windows binary
+        env:
+          CC: x86_64-w64-mingw32-gcc
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: amd64
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: ${{ github.workspace }}/build/portaudio-win/lib/pkgconfig
+        run: |
+          mkdir -p dist/package
+          export CGO_CFLAGS="$(pkg-config --cflags portaudio-2.0)"
+          export CGO_LDFLAGS="$(pkg-config --libs --static portaudio-2.0)"
+          go build -trimpath -ldflags='-s -w -extldflags "-static"' -o dist/package/stt.exe .
+          cp README.md LICENSE dist/package/
+
+      - name: Package
+        run: |
+          cd dist/package
+          python3 -m zipfile -c ../stt-windows-amd64.zip stt.exe README.md LICENSE
+          cd ../..
+          sha256sum dist/stt-windows-amd64.zip > dist/stt-windows-amd64.zip.sha256
+
+      - name: Move Latest tag
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git tag -f Latest "$GITHUB_SHA"
+          git push origin refs/tags/Latest --force
+
+      - name: Publish Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          notes="Automated build from ${GITHUB_REF_NAME} at ${GITHUB_SHA}."
+          if gh release view Latest >/dev/null 2>&1; then
+            gh release edit Latest --title "Latest" --notes "$notes"
+          else
+            gh release create Latest --title "Latest" --notes "$notes"
+          fi
+          gh release upload Latest \
+            dist/stt-windows-amd64.zip \
+            dist/stt-windows-amd64.zip.sha256 \
+            --clobber

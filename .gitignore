@@ -1,0 +1,50 @@
+# Local configuration and secrets
+config.json
+*.local.json
+.env
+.env.*
+
+# Runtime cache and temporary audio files
+cache/
+RecordTemp_*
+*.wav
+*.ogg
+*.mp3
+*.flac
+*.m4a
+*.aac
+*.opus
+
+# Go build output
+bin/
+build/
+dist/
+out/
+stt.exe
+*.exe
+*.dll
+*.so
+*.dylib
+*.test
+*.out
+coverage.*
+
+# Go workspace and dependency scratch files
+go.work
+go.work.sum
+vendor/
+
+# Logs and temporary files
+*.log
+*.tmp
+*.temp
+tmp/
+temp/
+
+# Editor and OS files
+.idea/
+.vscode/
+*.swp
+*.swo
+.DS_Store
+Thumbs.db

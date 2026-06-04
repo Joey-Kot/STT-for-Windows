@@ -27,6 +27,12 @@
 
 ## 构建
 
+### GitHub Actions 自动构建
+
+仓库已配置 GitHub Actions：向 `main` 分支提交时会自动触发，也可以在 Actions 页面通过 `workflow_dispatch` 手动触发。
+
+构建流程会在 Ubuntu runner 上运行测试，交叉编译 PortAudio 静态库，并生成 Windows amd64 版 `stt.exe`。构建完成后会把产物打包为 `stt-windows-amd64.zip`，覆盖上传到标签名为 `Latest` 的 Release 中，同时上传对应的 `stt-windows-amd64.zip.sha256` 校验文件。
+
 ### 在 Windows 上本地构建（动态链接 PortAudio DLL）
 
 Windows（开发 / 动态链接）——快速上手
