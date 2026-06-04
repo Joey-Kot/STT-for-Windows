@@ -14,6 +14,7 @@ package asr
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -71,5 +72,61 @@ func TestTranscribeRetryExhaustedError(t *testing.T) {
 	}
 	if re.MaxRetry != cfg.MaxRetry {
 		t.Fatalf("expected MaxRetry %d, got %d", cfg.MaxRetry, re.MaxRetry)
+	}
+}
+
+func TestExtraConfigNullDeletesBaseField(t *testing.T) {
+	requestChecked := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			http.Error(w, fmt.Sprintf("parse multipart form: %v", err), http.StatusBadRequest)
+			return
+		}
+		if _, ok := r.MultipartForm.Value["language"]; ok {
+			http.Error(w, "language field should be deleted", http.StatusBadRequest)
+			return
+		}
+		requestChecked = true
+		_, _ = w.Write([]byte(`{"text":"ok"}`))
+	}))
+	defer server.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.APIEndpoint = server.URL
+	cfg.Language = "zh"
+	cfg.ExtraConfig = `{"language":null}`
+	cfg.TEXTPath = "text"
+	cfg.MaxRetry = 1
+	cfg.RequestTimeout = 2
+
+	client, err := New(cfg, &http.Client{Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	tmp, err := os.CreateTemp("", "asr-test-*.wav")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	if _, err := tmp.Write([]byte("test")); err != nil {
+		_ = tmp.Close()
+		_ = os.Remove(tmp.Name())
+		t.Fatalf("write temp file failed: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmp.Name())
+		t.Fatalf("close temp file failed: %v", err)
+	}
+	defer os.Remove(tmp.Name())
+
+	text, _, err := client.Transcribe(context.Background(), tmp.Name())
+	if err != nil {
+		t.Fatalf("Transcribe failed: %v", err)
+	}
+	if text != "ok" {
+		t.Fatalf("expected text ok, got %q", text)
+	}
+	if !requestChecked {
+		t.Fatalf("server did not check request")
 	}
 }

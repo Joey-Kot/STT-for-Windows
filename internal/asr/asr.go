@@ -125,6 +125,10 @@ func (c *Client) doUpload(ctx context.Context, filePath string) (bool, []byte) {
 	}
 	if c.extraConfigMap != nil {
 		for k, v := range c.extraConfigMap {
+			if v == nil {
+				delete(base, k)
+				continue
+			}
 			base[k] = v
 		}
 	}
