@@ -2,7 +2,9 @@
 
 ## 简介
 
-这是一个面向 Windows 平台的桌面语音转写（STT）客户端。支持从麦克风录音、将音频转码（通过 ffmpeg）、将文件上传到指定的 ASR 接口并将返回的文本自动粘贴到当前光标位置。提供全局热键控制、临时文件管理与可选缓存保存。
+一个系统语音输入增强插件，以 Client 模式运行在后台，通过 LLM API 为系统提供语音输入增强支持，通用 REST 端点的 API 均可使用。支持丰富的配置参数及扩展字段。
+
+通过快捷键控制录音（录制/暂停/结束/取消），并以剪贴板作为中转，将识别结果粘贴到任何支持复制粘贴的位置，提供无感语音输入体验。提供两套快捷键系统：系统注册热键（RegisterHotKey）与底层键盘钩子（WH_KEYBOARD_LL）。
 
 ## 主要特性
 
@@ -20,8 +22,8 @@
 
 ## 先决条件
 
-- 操作系统：Windows
-- ffmpeg 可执行文件在环境变量中
+- 操作系统：Windows（目前仅适配 Windows，理论上只需更改剪贴板相关部分即可兼容 macOS / Linux，有兴趣可自行修改）
+- ffmpeg 可执行文件在系统环境变量中（未将 ffmpeg 静态编译为依赖，需用户手动添加到 PATH）
 
 ## 构建
 
@@ -111,54 +113,77 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 
 程序默认查找当前目录下的 `config.json`。如果不存在且没有提供任何命令行相关参数，程序会生成一个默认的 `config.json` 并退出。
 
-主要配置字段（默认值见括号）：
+主要配置字段：
 
-- API_ENDPOINT (string) — ASR 上传端点 URL
-- TOKEN (string) — 授权 token（Bearer）
-- MODEL (string)
-- LANGUAGE (string)
-- PROMPT (string)
-- TEXT_PATH (string) — 从返回 JSON 中抽取文本的路径，点分并支持索引（默认 "text"）
-- ExtraConfig (string) — 字符串化 JSON，会解析为根级字段并覆盖基础字段
-- Channels (int) — 录音通道数（1）
-- SAMPLING_RATE (int) — 采样率 Hz（16000）
-- SAMPLING_RATE_DEPTH (int) — 采样位深（16）
-- BIT_RATE (int) — 音频比特率 kbps（128）
-- CODECS (string) — 编码器（"opus"）
-- CONTAINER (string) — 容器（"ogg"）
-- REQUEST_TIMEOUT (int) — 请求超时（秒，30）
-- MAX_RETRY (int) — 上传最大重试次数（3）
-- RETRY_BASE_DELAY (float) — 重试间隔基准秒（0.5）
-- ENABLE_HTTP2 (bool) — 是否启用 HTTP/2（true）
-- VERIFY_SSL (bool) — 是否验证 SSL（true）
-- HOTKEY_HOOK (bool) — 是否使用低级钩子（false）
-- StartKey / PauseKey / CancelKey (string) — 热键字符串（默认 "alt+q", "alt+s", "esc"）
-- CACHE_DIR (string) — 缓存目录路径（空则使用当前目录）
-- KEEP_CACHE (bool) — 是否保存录音与响应（false）
-- NOTIFICATION (bool) — 是否启用通知（true）
-- REQUEST_FAILED_NOTIFICATION (bool) — 仅录音模式下：重试耗尽后粘贴占位符（false）
-- FFMPEG_DEBUG, RECORD_DEBUG, HOTKEY_DEBUG, UPLOAD_DEBUG (bool) — 各类调试开关
+| 字段 | 类型 | 默认值 | 说明 |
+|------|------|--------|------|
+| API_ENDPOINT | string | — | ASR 上传端点 URL |
+| TOKEN | string | — | 授权 token（Bearer） |
+| MODEL | string | — | 模型名称 |
+| LANGUAGE | string | — | 语言 |
+| PROMPT | string | — | 提示词 |
+| TEXT_PATH | string | `"text"` | 从返回 JSON 中抽取文本的路径，点分并支持索引 |
+| ExtraConfig | string | — | 字符串化 JSON，解析为根级字段并覆盖基础字段 |
+| Channels | int | `1` | 录音通道数 |
+| SAMPLING_RATE | int | `16000` | 采样率（Hz） |
+| SAMPLING_RATE_DEPTH | int | `16` | 采样位深 |
+| BIT_RATE | int | `128` | 音频比特率（kbps） |
+| CODECS | string | `"opus"` | 编码器 |
+| CONTAINER | string | `"ogg"` | 容器格式 |
+| REQUEST_TIMEOUT | int | `30` | 请求超时（秒） |
+| MAX_RETRY | int | `3` | 上传最大重试次数 |
+| RETRY_BASE_DELAY | float | `0.5` | 重试间隔基准（秒） |
+| ENABLE_HTTP2 | bool | `true` | 是否启用 HTTP/2 |
+| VERIFY_SSL | bool | `true` | 是否验证 SSL |
+| HOTKEY_HOOK | bool | `false` | 是否使用低级键盘钩子 |
+| StartKey | string | `"alt+q"` | 开始/停止录音热键 |
+| PauseKey | string | `"alt+s"` | 暂停/恢复录音热键 |
+| CancelKey | string | `"esc"` | 取消录音热键 |
+| CACHE_DIR | string | `""` | 缓存目录路径（空则使用当前目录） |
+| KEEP_CACHE | bool | `false` | 是否保存录音与响应 |
+| NOTIFICATION | bool | `true` | 是否启用通知 |
+| REQUEST_FAILED_NOTIFICATION | bool | `false` | 重试耗尽后粘贴占位符 |
+| FFMPEG_DEBUG | bool | `false` | ffmpeg 调试开关 |
+| RECORD_DEBUG | bool | `false` | 录音调试开关 |
+| HOTKEY_DEBUG | bool | `false` | 热键调试开关 |
+| UPLOAD_DEBUG | bool | `false` | 上传调试开关 |
 
 ## 命令行参数
 
-命令行参数优先级高于配置文件，会覆盖配置文件中的对应设置。常见用法：
+命令行参数优先级高于配置文件，会覆盖配置文件中的对应设置。
 
-- -config <path>         指定配置文件
-- -file <path>           上传已有音频文件（跳过录音）
-- -api-endpoint <url>
-- -token <token>
-- -model <model>
-- -language <lang>
-- -prompt <text>
-- -text-path <path>      自定义从返回 JSON 中抽取文本的路径
-- -extra-config <json>   额外 JSON 字符串，会解析并合并到请求 payload（优先级高）
-- -codecs/-container/-channels/-sampling-rate/-sampling-rate-depth/-bit-rate
-- -request-timeout/-max-retry/-retry-base-delay
-- -start-key/-pause-key/-cancel-key/-hotkeyhook
-- -cache-dir/-keep-cache
-- -notification
-- -request-failed-notification
-- -ffmpeg-debug/-record-debug/-hotkey-debug/-upload-debug
+| 参数 | 说明 |
+|------|------|
+| `-config <path>` | 指定配置文件 |
+| `-file <path>` | 上传本地已有音频文件 |
+| `-api-endpoint <url>` | ASR 上传端点 URL |
+| `-token <token>` | 授权 token |
+| `-model <model>` | 模型名称 |
+| `-language <lang>` | 语言 |
+| `-prompt <text>` | 提示词 |
+| `-text-path <path>` | 自定义从返回 JSON 中抽取文本的路径 |
+| `-extra-config <json>` | 额外 JSON 字符串，解析并合并到请求 payload（优先级高） |
+| `-codecs` | 编码器 |
+| `-container` | 容器格式 |
+| `-channels` | 录音通道数 |
+| `-sampling-rate` | 采样率 |
+| `-sampling-rate-depth` | 采样位深 |
+| `-bit-rate` | 比特率 |
+| `-request-timeout` | 请求超时 |
+| `-max-retry` | 最大重试次数 |
+| `-retry-base-delay` | 重试基准延迟 |
+| `-start-key` | 开始/停止录音热键 |
+| `-pause-key` | 暂停/恢复录音热键 |
+| `-cancel-key` | 取消录音热键 |
+| `-hotkeyhook` | 使用低级键盘钩子 |
+| `-cache-dir` | 缓存目录 |
+| `-keep-cache` | 保存录音与响应 |
+| `-notification` | 启用通知 |
+| `-request-failed-notification` | 重试耗尽后粘贴占位符 |
+| `-ffmpeg-debug` | ffmpeg 调试开关 |
+| `-record-debug` | 录音调试开关 |
+| `-hotkey-debug` | 热键调试开关 |
+| `-upload-debug` | 上传调试开关 |
 
 ### 示例
 
@@ -173,7 +198,7 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 
 ## 其他说明
 
-### TEXT_PATH 与 ExtraConfig 说明
+### 自定义解析路径与扩展字段
 
 - TEXT_PATH：用于从 ASR 的 JSON 响应中定位最终文本。支持类似 "results[0].alternatives[0].transcript" 或简单 "text"。如果配置了 TEXT_PATH 并且解析成功，则该值即为结果（即使空字符串也作为有效结果返回）。
 - ExtraConfig：接受一个 JSON 字符串（需转义），解析后将根级字段合并到上传表单中，优先级高于程序内置字段，方便将任意自定义字段、数组传给服务（例如 language_hints）。
@@ -194,7 +219,7 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 
 ### 调试与常见问题
 
-- 无法初始化 PortAudio：确认 PortAudio 已安装并可被链接，或在 Windows 下确保 DLL 在 PATH 中或放在可执行文件同目录。
+- 无法初始化 PortAudio：确认 PortAudio 已安装并可被链接，或在 Windows 下确保 DLL 在 PATH 中或放在可执行文件同目录。Linux 交叉静态编译版不会有这个问题。
 - ffmpeg 转码失败：确保 ffmpeg 在 PATH 中；可以启用 -ffmpeg-debug 打印执行命令与 stderr。
 - 热键注册失败：尝试以管理员权限运行，或改用不同的热键组合；检查程序是否在被安全软件限制。
 - 上传失败：检查 API_ENDPOINT、TOKEN 是否配置正确；启用 -upload-debug 查看请求/响应内容。
@@ -202,5 +227,5 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 
 ### 安全注意
 
-- 若将 VERIFY_SSL 设为 false，会跳过 HTTPS 证书验证 —— 这在不受信任网络下存在安全风险，请谨慎使用。
+- 若将 VERIFY_SSL 设为 false，会跳过 HTTPS 证书验证 —— 在不受信任网络下存在安全风险，请谨慎使用。
 - 上传和日志中可能包含敏感信息（例如 token 或识别结果），请妥善保管。
