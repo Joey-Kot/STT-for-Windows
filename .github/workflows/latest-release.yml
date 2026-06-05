@@ -113,8 +113,31 @@ jobs:
           ffmpeg_ldflags="$(pkg-config --libs --static libavformat libavcodec libswresample libavutil)"
           portaudio_ldflags="$(pkg-config --libs --static portaudio-2.0)"
           export CGO_LDFLAGS="-Wl,--start-group ${ffmpeg_ldflags} ${portaudio_ldflags} -Wl,--end-group"
-          export GOFLAGS="-tags=gui_ffmpeg_cgo"
-          wails build -platform windows/amd64 -clean -skipbindings -s -ldflags='-s -w -extldflags "-static"'
+          selected_ffmpeg_files="$(go list -tags gui_ffmpeg_cgo -f '{{.GoFiles}} {{.CgoFiles}}' stt/internal/audio/ffmpeg)"
+          echo "Selected ffmpeg files: ${selected_ffmpeg_files}"
+          case "${selected_ffmpeg_files}" in
+            *convert_cgo.go*)
+              ;;
+            *)
+              echo "GUI build did not select cgo FFmpeg implementation" >&2
+              exit 1
+              ;;
+          esac
+          case "${selected_ffmpeg_files}" in
+            *convert_exec.go*)
+              echo "GUI build selected external-process FFmpeg implementation" >&2
+              exit 1
+              ;;
+          esac
+          wails build -platform windows/amd64 -clean -skipbindings -s -tags gui_ffmpeg_cgo -ldflags='-s -w -extldflags "-static"'
+          if strings build/bin/STT.exe | grep -q '\[ffmpeg\] executing: ffmpeg'; then
+            echo "GUI binary still contains external-process FFmpeg implementation" >&2
+            exit 1
+          fi
+          if ! strings build/bin/STT.exe | grep -q '\[ffmpeg\] libav convert'; then
+            echo "GUI binary does not contain libav FFmpeg implementation marker" >&2
+            exit 1
+          fi
 
       - name: Package GUI
         run: |
