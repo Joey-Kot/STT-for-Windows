@@ -1,5 +1,7 @@
 # STT for Windows
 
+![STT for Windows GUI](docs/images/Screenshot.png)
+
 Windows 桌面语音转写客户端，支持 GUI 浮窗和 CLI 两种使用方式。程序通过快捷键控制录音，将音频上传到兼容 REST 接口的 ASR 服务，并把识别结果写入剪贴板后自动粘贴到当前输入位置。
 
 ## 主要特性
