@@ -1,0 +1,106 @@
+<!doctype html>
+<!--
+  Copyright (C) 2026 Joey Kot <joey.kot.x@gmail.com>
+
+  This program is free software: you can redistribute it and/or modify
+  it under the terms of the GNU General Public License as published by
+  the Free Software Foundation, either version 3 of the License, or
+  (at your option) any later version.
+
+  This program is distributed WITHOUT ANY WARRANTY; without even the
+  implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
+  See <https://www.gnu.org/licenses/> for more details.
+-->
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>STT</title>
+    <link rel="stylesheet" href="./styles/global.css" />
+  </head>
+  <body>
+    <main id="app" class="panel">
+      <section class="floating" data-drag>
+        <div class="dragbar"></div>
+        <div class="controls">
+          <button id="recordBtn" class="iconButton record" title="Start or stop recording" aria-label="Start or stop recording">
+            <svg class="recordIcon" viewBox="0 0 24 24" aria-hidden="true">
+              <defs>
+                <clipPath id="recordWaveClip">
+                  <path d="M12 14c1.7 0 3-1.3 3-3V6c0-1.7-1.3-3-3-3S9 4.3 9 6v5c0 1.7 1.3 3 3 3Z"></path>
+                </clipPath>
+              </defs>
+              <g class="micWaveGroup" clip-path="url(#recordWaveClip)">
+                <path class="micWave" d="M5 8.4c1-.8 2-.8 3 0s2 .8 3 0 2-.8 3 0 2 .8 3 0"></path>
+                <path class="micWave micWaveOffset" d="M5 11c1-.8 2-.8 3 0s2 .8 3 0 2-.8 3 0 2 .8 3 0"></path>
+              </g>
+              <path class="micShell" d="M12 14c1.7 0 3-1.3 3-3V6c0-1.7-1.3-3-3-3S9 4.3 9 6v5c0 1.7 1.3 3 3 3Z"></path>
+              <path d="M5 11a7 7 0 0 0 14 0"></path>
+              <path d="M12 18v3"></path>
+            </svg>
+          </button>
+          <button id="pauseBtn" class="iconButton pause" title="Pause or resume" aria-label="Pause or resume">
+            <svg id="pauseIcon" viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M8 5v14"></path>
+              <path d="M16 5v14"></path>
+            </svg>
+          </button>
+          <button id="cancelBtn" class="iconButton cancel" title="Cancel recording" aria-label="Cancel recording">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 6 6 18"></path>
+              <path d="m6 6 12 12"></path>
+            </svg>
+          </button>
+          <button id="settingsBtn" class="iconButton utility" title="Settings" aria-label="Settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M12 15.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7Z"></path>
+              <path d="M19.4 15a1.7 1.7 0 0 0 .3 1.9l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.7 1.7 0 0 0-1.9-.3 1.7 1.7 0 0 0-1 1.6v.3a2 2 0 1 1-4 0V21a1.7 1.7 0 0 0-1.1-1.6 1.7 1.7 0 0 0-1.8.3l-.1.1A2 2 0 1 1 4.2 17l.1-.1a1.7 1.7 0 0 0 .3-1.9 1.7 1.7 0 0 0-1.6-1H2.7a2 2 0 1 1 0-4H3a1.7 1.7 0 0 0 1.6-1.1 1.7 1.7 0 0 0-.3-1.8L4.2 7A2 2 0 1 1 7 4.2l.1.1a1.7 1.7 0 0 0 1.9.3H9a1.7 1.7 0 0 0 1-1.6v-.3a2 2 0 1 1 4 0V3a1.7 1.7 0 0 0 1.1 1.6 1.7 1.7 0 0 0 1.8-.3l.1-.1A2 2 0 1 1 19.8 7l-.1.1a1.7 1.7 0 0 0-.3 1.9v.1a1.7 1.7 0 0 0 1.6 1h.3a2 2 0 1 1 0 4H21a1.7 1.7 0 0 0-1.6.9Z"></path>
+            </svg>
+          </button>
+          <button id="minimalBtn" class="iconButton utility" title="Minimal" aria-label="Minimal">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M6 12h12"></path>
+            </svg>
+          </button>
+        </div>
+        <div id="status" class="status">Idle</div>
+      </section>
+
+      <section id="settingsView" class="settings hidden">
+        <header class="settingsHeader" data-drag>
+          <div>
+            <h1>Settings</h1>
+            <p id="configPath"></p>
+          </div>
+          <button id="closeSettingsBtn" class="iconButton utility" title="Close settings" aria-label="Close settings">
+            <svg viewBox="0 0 24 24" aria-hidden="true">
+              <path d="M18 6 6 18"></path>
+              <path d="m6 6 12 12"></path>
+            </svg>
+          </button>
+        </header>
+        <div class="settingsBody">
+          <nav id="tabs" class="tabs"></nav>
+          <form id="configForm" class="form"></form>
+        </div>
+        <footer class="settingsFooter">
+          <span id="saveStatus"></span>
+          <button id="cancelSettingsBtn" class="textButton" type="button">Cancel</button>
+          <button id="saveSettingsBtn" class="textButton primary" type="button">Save</button>
+        </footer>
+      </section>
+
+      <dialog id="quitDialog">
+        <form method="dialog">
+          <h2>Quit STT?</h2>
+          <p id="quitMessage"></p>
+          <div class="dialogActions">
+            <button id="keepRunningBtn" class="textButton" value="cancel">Cancel</button>
+            <button id="confirmQuitBtn" class="textButton danger" value="default">Quit</button>
+          </div>
+        </form>
+      </dialog>
+    </main>
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>

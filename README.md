@@ -1,160 +1,134 @@
-# STT 客户端
+# STT for Windows
 
-## 简介
-
-一个系统语音输入增强插件，以 Client 模式运行在后台，通过 LLM API 为系统提供语音输入增强支持，通用 REST 端点的 API 均可使用。支持丰富的配置参数及扩展字段。
-
-通过快捷键控制录音（录制/暂停/结束/取消），并以剪贴板作为中转，将识别结果粘贴到任何支持复制粘贴的位置，提供无感语音输入体验。提供两套快捷键系统：系统注册热键（RegisterHotKey）与底层键盘钩子（WH_KEYBOARD_LL）。
+Windows 桌面语音转写客户端，支持 GUI 浮窗和 CLI 两种使用方式。程序通过快捷键控制录音，将音频上传到兼容 REST 接口的 ASR 服务，并把识别结果写入剪贴板后自动粘贴到当前输入位置。
 
 ## 主要特性
 
-- 支持配置文件（JSON）和命令行参数，命令行参数优先级更高。
-- 启动没有 config.json 时可生成默认 config.json。
-- 使用 PortAudio（通过 Go 绑定）进行录音。
-- 录音输出为临时文件名以 `RecordTemp_<uuid>` 为前缀，如不开启缓存，则会在下一次启动程序时自动清理临时文件。
-- 使用 ffmpeg 将 WAV 转码为指定 codec/container（默认 opus/ogg）。
-- 上传重试机制（可配置重试次数与基准延迟）。
-- 支持通过 ExtraConfig 合并自定义字段到上传请求中，可以通过该选项注入任意参数。
-- 自动将识别结果写入剪贴板并模拟 Ctrl+V 粘贴（使用 keybd_event）。
-- 可选 Windows 通知（建议不要开启，会引入不必要的延迟）。
-- 两种热键绑定方式：RegisterHotKey（注册全局热键）或 WH_KEYBOARD_LL 低级键盘钩子（HotKeyHook）。
-- 可选将录音与响应保存到缓存目录（cache-dir 与 keep-cache）。
+- GUI 桌面客户端：浮窗录音控制、minimal 工具条、系统托盘、Settings 配置界面。
+- CLI 客户端：命令行参数、配置文件和热键工作流。
+- 全局快捷键：开始/停止、暂停/恢复、取消录音。
+- JSON 配置：GUI 可视化编辑，CLI 支持配置文件和命令行参数覆盖。
+- 音频处理：PortAudio 录音，ffmpeg 转码，默认 `opus/ogg`。
+- 上传与重试：支持请求超时、最大重试次数、重试延迟、HTTP/2、SSL 校验配置。
+- 结果粘贴：从返回 JSON 中按 `TEXT_PATH` 抽取文本，写入剪贴板并模拟 `Ctrl+V`。
+- 缓存能力：可选择保留录音、转码文件和响应 JSON。
 
-## 先决条件
+## 下载与使用
 
-- 操作系统：Windows（目前仅适配 Windows，理论上只需更改剪贴板相关部分即可兼容 macOS / Linux，有兴趣可自行修改）
-- ffmpeg 可执行文件在系统环境变量中（未将 ffmpeg 静态编译为依赖，需用户手动添加到 PATH）
+在 GitHub Releases 的 `Latest` 中下载需要的版本：
 
-## 构建
+| 文件 | 说明 |
+|------|------|
+| `stt-cli-windows-amd64.zip` | CLI 版本，压缩包内为 `stt.exe` |
+| `stt-cli-windows-amd64.zip.sha256` | CLI 压缩包 SHA256 |
+| `stt-gui-windows-amd64.zip` | GUI 版本，压缩包内为 `STT.exe` |
+| `stt-gui-windows-amd64.zip.sha256` | GUI 压缩包 SHA256 |
 
-### GitHub Actions 自动构建
+运行前请确认：
 
-仓库已配置 GitHub Actions：向 `main` 分支提交时会自动触发，也可以在 Actions 页面通过 `workflow_dispatch` 手动触发。
+- 系统为 Windows。
+- `ffmpeg` 已加入系统 `PATH`，可在终端中执行 `ffmpeg -version`。
+- 已准备好 ASR 接口地址、Token、模型名等必要配置。
 
-构建流程会在 Ubuntu runner 上运行测试，交叉编译 PortAudio 静态库，并生成 Windows amd64 版 `stt.exe`。构建完成后会把产物打包为 `stt-windows-amd64.zip`，覆盖上传到标签名为 `Latest` 的 Release 中，同时上传对应的 `stt-windows-amd64.zip.sha256` 校验文件。
+### GUI
 
-### 在 Windows 上本地构建（动态链接 PortAudio DLL）
+解压 `stt-gui-windows-amd64.zip`，运行 `STT.exe`。
 
-Windows（开发 / 动态链接）——快速上手
+GUI 启动后会显示小型浮窗：
 
-1. 确保系统安装 Go 工具链（建议 Go 1.17+/1.18+）。
-2. 在 Windows 上安装或放置 PortAudio 的 DLL（或将对应的 .lib 放在链接器可见位置）。将 ffmpeg 可执行文件加入 PATH（验证：`ffmpeg -version`）。
-3. 获取依赖（模块模式）:
+- 麦克风按钮：开始/停止录音。
+- 暂停按钮：暂停/恢复录音。
+- 取消按钮：取消当前录音。
+- `-` 按钮：进入 minimal 工具条。
+- minimal 工具条中的 `+` 按钮：恢复完整浮窗。
+- 托盘菜单：`Minimal`、`Settings`、`Quit`。
 
-   go get github.com/gordonklaus/portaudio github.com/atotto/clipboard github.com/gen2brain/beeep github.com/go-audio/wav github.com/google/uuid github.com/micmonay/keybd_event golang.org/x/net/http2
+GUI 默认配置路径为：
 
-4. 构建（动态方式，适合开发与调试）:
-
-```bash
-   go build -o stt.exe
+```text
+%APPDATA%\stt\config.json
 ```
 
-### 在 Linux 环境下交叉编译以生成 Windows 静态可执行文件（包含交叉编译 PortAudio 并静态链接）
+首次启动时如果该文件不存在，GUI 会自动生成默认配置。通过托盘菜单或浮窗设置按钮打开 `Settings` 后，可以编辑并保存 ASR JSON 配置。保存配置时需要处于空闲状态，录音、暂停或上传中不允许保存。
 
-Linux 下交叉编译为 Windows 静态可执行（示例）
+### CLI
 
-在 Debian/Ubuntu 环境中，交叉编译 PortAudio 并静态链接以生成 stt.exe 的示例步骤。请根据发行版与交叉编译器路径调整。
+解压 `stt-cli-windows-amd64.zip`，在终端运行：
 
-1. 安装构建工具与交叉工具链
-
-```bash
-apt update
-apt install -y build-essential autoconf automake libtool pkg-config wget tar mingw-w64
+```powershell
+.\stt.exe
 ```
 
-2. 下载并解压 PortAudio 稳定版（示例）
+CLI 默认查找当前目录下的 `config.json`。如果当前目录没有 `config.json` 且没有提供任何命令行参数，程序会生成默认配置文件并退出。
 
-```bash
-wget https://files.portaudio.com/archives/pa_stable_v190700_20210406.tgz
-tar xzf pa_stable_v190700_20210406.tgz
-cd portaudio
+常见用法：
+
+```powershell
+.\stt.exe -config config.json
 ```
 
-3. 交叉编译并安装 PortAudio 为 Windows 静态库（输出到当前目录的 install 路径下）
-
-```bash
-mkdir build-win && cd build-win
-../configure --host=x86_64-w64-mingw32 --prefix=$(pwd)/install --disable-shared --enable-static CC=x86_64-w64-mingw32-gcc
-make -j$(nproc)
-make install
+```powershell
+.\stt.exe -api-endpoint https://api.example/v1/transcribe -token sk-xxx -file sample.wav
 ```
 
-4. 设置环境变量以指向交叉编译安装产物并启用 cgo / 交叉链接
+## 默认快捷键
 
-```bash
-export PA_WIN_PREFIX=$(pwd)/install
-export PKG_CONFIG_PATH="${PA_WIN_PREFIX}/lib/pkgconfig:${PKG_CONFIG_PATH:-}"
-export CC=x86_64-w64-mingw32-gcc
-export CGO_ENABLED=1
-export GOOS=windows
-export GOARCH=amd64
-export CGO_CFLAGS="-I${PA_WIN_PREFIX}/include"
-export CGO_LDFLAGS="-L${PA_WIN_PREFIX}/lib -lportaudio -lwinmm -lole32 -lws2_32"
-export PKG_CONFIG_ALLOW_CROSS=1
-```
+| 动作 | 默认快捷键 |
+|------|------------|
+| 开始/停止录音 | `ctrl+alt+q` |
+| 暂停/恢复录音 | `ctrl+alt+s` |
+| 取消录音 | `alt+esc` |
 
-5. 初始化项目依赖（如果尚未创建 go.mod）
+默认启用 `HOTKEY_HOOK`，使用 Windows 低级键盘钩子处理热键。如果热键注册失败，可以尝试以管理员权限运行，或在配置中改用其他组合。
 
-```bash
-go mod init stt
-go mod tidy
-```
+## 配置文件
 
-6. 交叉静态构建 stt.exe（尝试让链接器进行静态链接）
-
-```bash
-PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
-```
-
-#### 注意与故障排除
-
-- 交叉静态链接在不同系统和交叉编译器组合下差异较大。常见问题包括找不到静态 CRT、缺少系统库或符号未定义。若遇到链接错误，请查看 go build 输出并确认 PA_WIN_PREFIX 指向的 lib 中包含 libportaudio.a 以及所需的系统库静态版本。
-- 若无法生成完全静态二进制，可先生成依赖 DLL 的动态二进制以便开发调试，然后再逐步尝试静态化链接。
-- 在 Windows 平台直接编译（本机编译）通常更简单：在 Windows 上安装 PortAudio 的开发包 / DLL 并直接执行 `go build`。
-- 静态链接 CRT 或使用 -static 可能导致某些系统调用或网络行为差异（例如 DNS、SSL 库依赖）。
-
----
-
-## 配置文件说明
-
-程序默认查找当前目录下的 `config.json`。如果不存在且没有提供任何命令行相关参数，程序会生成一个默认的 `config.json` 并退出。
+GUI 和 CLI 使用兼容的 JSON 配置格式。GUI 默认使用 `%APPDATA%\stt\config.json`，CLI 默认使用当前目录的 `config.json`，两者不会互相修改默认读取路径。
 
 主要配置字段：
 
 | 字段 | 类型 | 默认值 | 说明 |
 |------|------|--------|------|
-| API_ENDPOINT | string | — | ASR 上传端点 URL |
-| TOKEN | string | — | 授权 token（Bearer） |
-| MODEL | string | — | 模型名称 |
-| LANGUAGE | string | — | 语言 |
-| PROMPT | string | — | 提示词 |
-| TEXT_PATH | string | `"text"` | 从返回 JSON 中抽取文本的路径，点分并支持索引 |
-| ExtraConfig | string | — | 字符串化 JSON，解析为根级字段并覆盖基础字段 |
-| Channels | int | `1` | 录音通道数 |
-| SAMPLING_RATE | int | `16000` | 采样率（Hz） |
-| SAMPLING_RATE_DEPTH | int | `16` | 采样位深 |
-| BIT_RATE | int | `128` | 音频比特率（kbps） |
-| CODECS | string | `"opus"` | 编码器 |
-| CONTAINER | string | `"ogg"` | 容器格式 |
-| REQUEST_TIMEOUT | int | `30` | 请求超时（秒） |
-| MAX_RETRY | int | `3` | 上传最大重试次数 |
-| RETRY_BASE_DELAY | float | `0.5` | 重试间隔基准（秒） |
-| ENABLE_HTTP2 | bool | `true` | 是否启用 HTTP/2 |
-| VERIFY_SSL | bool | `true` | 是否验证 SSL |
-| HOTKEY_HOOK | bool | `false` | 是否使用低级键盘钩子 |
-| StartKey | string | `"alt+q"` | 开始/停止录音热键 |
-| PauseKey | string | `"alt+s"` | 暂停/恢复录音热键 |
-| CancelKey | string | `"esc"` | 取消录音热键 |
-| CACHE_DIR | string | `""` | 缓存目录路径（空则使用当前目录） |
-| KEEP_CACHE | bool | `false` | 是否保存录音与响应 |
-| NOTIFICATION | bool | `true` | 是否启用通知 |
-| REQUEST_FAILED_NOTIFICATION | bool | `false` | 重试耗尽后粘贴占位符 |
-| FFMPEG_DEBUG | bool | `false` | ffmpeg 调试开关 |
-| RECORD_DEBUG | bool | `false` | 录音调试开关 |
-| HOTKEY_DEBUG | bool | `false` | 热键调试开关 |
-| UPLOAD_DEBUG | bool | `false` | 上传调试开关 |
+| `API_ENDPOINT` | string | `""` | ASR 上传端点 URL |
+| `TOKEN` | string | `""` | 授权 token |
+| `MODEL` | string | `""` | 模型名称 |
+| `LANGUAGE` | string | `""` | 语言 |
+| `PROMPT` | string | `""` | 提示词 |
+| `TEXT_PATH` | string | `"text"` | 从返回 JSON 中抽取文本的路径 |
+| `ExtraConfig` | string | `""` | 字符串化 JSON，解析为根级字段并覆盖基础字段 |
+| `CHANNELS` | int | `1` | 录音通道数 |
+| `SAMPLING_RATE` | int | `16000` | 采样率，单位 Hz |
+| `SAMPLING_RATE_DEPTH` | int | `16` | 采样位深 |
+| `BIT_RATE` | int | `32` | 音频比特率，单位 kbps |
+| `CODECS` | string | `"opus"` | 编码器 |
+| `CONTAINER` | string | `"ogg"` | 容器格式 |
+| `REQUEST_TIMEOUT` | int | `60` | 请求超时，单位秒 |
+| `MAX_RETRY` | int | `3` | 上传最大重试次数 |
+| `RETRY_BASE_DELAY` | float | `0.5` | 重试间隔基准，单位秒 |
+| `ENABLE_HTTP2` | bool | `true` | 是否启用 HTTP/2 |
+| `VERIFY_SSL` | bool | `true` | 是否验证 SSL 证书 |
+| `HOTKEY_HOOK` | bool | `true` | 是否使用低级键盘钩子 |
+| `START_KEY` | string | `"ctrl+alt+q"` | 开始/停止录音热键 |
+| `PAUSE_KEY` | string | `"ctrl+alt+s"` | 暂停/恢复录音热键 |
+| `CANCEL_KEY` | string | `"alt+esc"` | 取消录音热键 |
+| `CACHE_DIR` | string | `""` | 缓存目录路径，空则使用当前目录 |
+| `KEEP_CACHE` | bool | `false` | 是否保存录音、转码文件和响应 |
+| `NOTIFICATION` | bool | `false` | 是否启用 Windows 通知 |
+| `REQUEST_FAILED_NOTIFICATION` | bool | `false` | 请求失败后是否粘贴占位提示 |
+| `FFMPEG_DEBUG` | bool | `false` | ffmpeg 调试输出 |
+| `RECORD_DEBUG` | bool | `false` | 录音调试输出 |
+| `HOTKEY_DEBUG` | bool | `true` | 热键调试输出 |
+| `UPLOAD_DEBUG` | bool | `false` | 上传调试输出 |
 
-## 命令行参数
+`TEXT_PATH` 支持点分路径和数组索引，例如：
+
+```text
+results[0].alternatives[0].transcript
+```
+
+`ExtraConfig` 接受一个 JSON 字符串，解析后会合并到上传请求的根级字段中，适合注入服务端要求的额外参数。
+
+## CLI 参数
 
 命令行参数优先级高于配置文件，会覆盖配置文件中的对应设置。
 
@@ -168,7 +142,7 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 | `-language <lang>` | 语言 |
 | `-prompt <text>` | 提示词 |
 | `-text-path <path>` | 自定义从返回 JSON 中抽取文本的路径 |
-| `-extra-config <json>` | 额外 JSON 字符串，解析并合并到请求 payload（优先级高） |
+| `-extra-config <json>` | 额外 JSON 字符串，解析并合并到请求 payload |
 | `-codecs` | 编码器 |
 | `-container` | 容器格式 |
 | `-channels` | 录音通道数 |
@@ -178,6 +152,8 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 | `-request-timeout` | 请求超时 |
 | `-max-retry` | 最大重试次数 |
 | `-retry-base-delay` | 重试基准延迟 |
+| `-enable-http2` | 启用 HTTP/2 |
+| `-verify-ssl` | 验证 SSL 证书 |
 | `-start-key` | 开始/停止录音热键 |
 | `-pause-key` | 暂停/恢复录音热键 |
 | `-cancel-key` | 取消录音热键 |
@@ -191,47 +167,59 @@ PKG_CONFIG_ALLOW_CROSS=1 go build -v -ldflags '-extldflags "-static"' -o stt.exe
 | `-hotkey-debug` | 热键调试开关 |
 | `-upload-debug` | 上传调试开关 |
 
-### 示例
+## 构建
 
-1. 生成默认配置文件（当目录无 config.json 且没有传入参数时程序会自动生成）:
-   stt.exe
+### GitHub Actions
 
-2. 使用命令行参数直接上传已有音频:
-   stt.exe -api-endpoint https://api.example/v1/transcribe -token sk-xxx -file sample.wav
+仓库已配置 `.github/workflows/latest-release.yml`：
 
-3. 使用配置文件启动并通过热键控制录音:
-   stt.exe -config config.json
+- 向 `main` 分支提交时自动触发。
+- 也可以在 Actions 页面通过 `workflow_dispatch` 手动触发。
+- 构建 Windows amd64 CLI 和 GUI。
+- 发布到 `Latest` Release。
+- 上传 CLI/GUI zip 以及对应 SHA256 文件。
 
-## 其他说明
+### 本地构建 CLI
 
-### 自定义解析路径与扩展字段
+Windows 本机开发构建需要 Go、PortAudio 和 ffmpeg：
 
-- TEXT_PATH：用于从 ASR 的 JSON 响应中定位最终文本。支持类似 "results[0].alternatives[0].transcript" 或简单 "text"。如果配置了 TEXT_PATH 并且解析成功，则该值即为结果（即使空字符串也作为有效结果返回）。
-- ExtraConfig：接受一个 JSON 字符串（需转义），解析后将根级字段合并到上传表单中，优先级高于程序内置字段，方便将任意自定义字段、数组传给服务（例如 language_hints）。
+```powershell
+go build -o stt.exe
+```
 
-### 临时文件与缓存
+Linux 交叉编译 Windows 版本时，需要 mingw-w64、PortAudio Windows 静态库，并设置 `CC`、`CGO_ENABLED`、`GOOS`、`GOARCH`、`PKG_CONFIG_PATH` 等环境变量。CI 中的 `.github/workflows/latest-release.yml` 可作为参考。
 
-- 录音阶段会在临时目录（若配置了 cache-dir 则使用该目录，否则为当前工作目录）创建 RecordTemp_<uuid>.wav 与 RecordTemp_<uuid>.<ext>（ext 基于 container）。
-- 程序启动会清理当前临时目录下以 RecordTemp_ 开头的文件。
-- 若启用 keep-cache 且提供了 cache-dir，程序会将录音与转码输出与对应 JSON 响应按时间戳重命名并保存到 cache-dir 中。
+### 本地构建 GUI
 
-### 热键与权限
+GUI 位于 `GUI/`，使用 Wails v2：
 
-- 默认热键：开始/停止 alt+q，暂停/恢复 alt+s，取消 esc。
-- 两种实现：
-  - RegisterHotKey: 使用 Windows RegisterHotKey API（需要消息循环与注册权限）。
-  - HotKeyHook（低级钩子）：使用 WH_KEYBOARD_LL 拦截并可独占按键事件（需要更高权限）。
-- 注册热键或安装钩子时可能失败（例如权限、冲突或系统策略），程序将在错误时退出并打印提示。
+```powershell
+cd GUI
+npm --prefix frontend install
+npm --prefix frontend run build
+wails build -platform windows/amd64
+```
 
-### 调试与常见问题
+交叉编译 GUI 时同样需要 Windows 版 PortAudio 和 mingw-w64，建议直接参考 CI 配置。
 
-- 无法初始化 PortAudio：确认 PortAudio 已安装并可被链接，或在 Windows 下确保 DLL 在 PATH 中或放在可执行文件同目录。Linux 交叉静态编译版不会有这个问题。
-- ffmpeg 转码失败：确保 ffmpeg 在 PATH 中；可以启用 -ffmpeg-debug 打印执行命令与 stderr。
-- 热键注册失败：尝试以管理员权限运行，或改用不同的热键组合；检查程序是否在被安全软件限制。
-- 上传失败：检查 API_ENDPOINT、TOKEN 是否配置正确；启用 -upload-debug 查看请求/响应内容。
-- 粘贴失败：确保目标应用接受 Ctrl+V，且在粘贴期间焦点在目标输入框；可以观察通知提示。
+## 临时文件与缓存
 
-### 安全注意
+- 录音阶段会创建 `RecordTemp_<uuid>.wav` 和转码后的 `RecordTemp_<uuid>.<ext>`。
+- 如果配置了 `CACHE_DIR`，临时文件会写入该目录；否则使用当前工作目录。
+- 程序启动时会清理当前临时目录下以 `RecordTemp_` 开头的文件。
+- 启用 `KEEP_CACHE` 后，会按时间戳保留录音、转码文件和响应 JSON。
 
-- 若将 VERIFY_SSL 设为 false，会跳过 HTTPS 证书验证 —— 在不受信任网络下存在安全风险，请谨慎使用。
-- 上传和日志中可能包含敏感信息（例如 token 或识别结果），请妥善保管。
+## 常见问题
+
+- 无法初始化 PortAudio：确认 PortAudio 可用，或确认打包版本没有缺少运行时依赖。
+- ffmpeg 转码失败：确认 `ffmpeg` 在 `PATH` 中；可开启 `FFMPEG_DEBUG` 查看详情。
+- 热键不可用：尝试管理员权限运行，或更换热键组合；检查是否与其他软件冲突。
+- 上传失败：检查 `API_ENDPOINT`、`TOKEN`、`MODEL` 等配置；可开启 `UPLOAD_DEBUG` 查看请求与响应。
+- 结果没有粘贴：确认目标应用焦点在输入框，且允许 `Ctrl+V` 粘贴。
+- GUI 保存失败：录音、暂停或上传中不能保存配置，回到空闲状态后再保存。
+
+## 安全注意
+
+- `TOKEN` 属于敏感信息，请勿提交到公开仓库或日志中。
+- `UPLOAD_DEBUG` 可能输出请求/响应内容，排查问题后建议关闭。
+- 将 `VERIFY_SSL` 设为 `false` 会跳过 HTTPS 证书验证，在不受信任网络中存在风险。

@@ -4,6 +4,7 @@ on:
   push:
     branches:
       - main
+      - dev
   workflow_dispatch:
 
 permissions:
@@ -30,6 +31,11 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Set up Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -46,6 +52,9 @@ jobs:
 
       - name: Test
         run: go test ./...
+
+      - name: Install Wails
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
 
       - name: Build PortAudio for Windows
         run: |
@@ -76,12 +85,36 @@ jobs:
           go build -trimpath -ldflags='-s -w -extldflags "-static"' -o dist/package/stt.exe .
           cp README.md LICENSE dist/package/
 
-      - name: Package
+      - name: Package CLI
         run: |
           cd dist/package
-          python3 -m zipfile -c ../stt-windows-amd64.zip stt.exe README.md LICENSE
+          python3 -m zipfile -c ../stt-cli-windows-amd64.zip stt.exe README.md LICENSE
           cd ../..
-          sha256sum dist/stt-windows-amd64.zip > dist/stt-windows-amd64.zip.sha256
+          sha256sum dist/stt-cli-windows-amd64.zip > dist/stt-cli-windows-amd64.zip.sha256
+
+      - name: Build Windows GUI
+        working-directory: GUI
+        run: |
+          npm --prefix frontend run build
+          wails generate module
+          npm --prefix frontend run build
+          export CC=x86_64-w64-mingw32-gcc
+          export CGO_ENABLED=1
+          export PKG_CONFIG_ALLOW_CROSS=1
+          export PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/build/portaudio-win/lib/pkgconfig"
+          export CGO_CFLAGS="$(pkg-config --cflags portaudio-2.0)"
+          export CGO_LDFLAGS="$(pkg-config --libs --static portaudio-2.0)"
+          wails build -platform windows/amd64 -clean -skipbindings -s -ldflags='-s -w -extldflags "-static"'
+
+      - name: Package GUI
+        run: |
+          mkdir -p dist/gui-package
+          cp GUI/build/bin/STT.exe dist/gui-package/
+          cp README.md LICENSE dist/gui-package/
+          cd dist/gui-package
+          python3 -m zipfile -c ../stt-gui-windows-amd64.zip STT.exe README.md LICENSE
+          cd ../..
+          sha256sum dist/stt-gui-windows-amd64.zip > dist/stt-gui-windows-amd64.zip.sha256
 
       - name: Move Latest tag
         run: |
@@ -101,6 +134,8 @@ jobs:
             gh release create Latest --title "Latest" --notes "$notes"
           fi
           gh release upload Latest \
-            dist/stt-windows-amd64.zip \
-            dist/stt-windows-amd64.zip.sha256 \
+            dist/stt-cli-windows-amd64.zip \
+            dist/stt-cli-windows-amd64.zip.sha256 \
+            dist/stt-gui-windows-amd64.zip \
+            dist/stt-gui-windows-amd64.zip.sha256 \
             --clobber

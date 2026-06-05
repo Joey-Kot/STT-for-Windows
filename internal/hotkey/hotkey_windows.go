@@ -18,20 +18,45 @@ import (
 	"runtime"
 	"strconv"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unsafe"
 )
 
+// Registration represents a registered hotkey set.
+type Registration struct {
+	once sync.Once
+	stop func()
+}
+
+// Stop releases registered hotkeys.
+func (r *Registration) Stop() {
+	if r == nil {
+		return
+	}
+	r.once.Do(func() {
+		if r.stop != nil {
+			r.stop()
+		}
+	})
+}
+
 // Register installs hotkeys and wires them to handler.
 func Register(startKey, pauseKey, cancelKey string, hook bool, handler func(id int), debug bool) error {
+	_, err := RegisterWithStop(startKey, pauseKey, cancelKey, hook, handler, debug)
+	return err
+}
+
+// RegisterWithStop installs hotkeys and returns a handle that can unregister them.
+func RegisterWithStop(startKey, pauseKey, cancelKey string, hook bool, handler func(id int), debug bool) (*Registration, error) {
 	if hook {
 		return startLowLevelHook(startKey, pauseKey, cancelKey, handler, debug)
 	}
 	return registerHotkeys(startKey, pauseKey, cancelKey, handler, debug)
 }
 
-func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int), debug bool) error {
+func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int), debug bool) (*Registration, error) {
 	type hotkeyDef struct {
 		id   int
 		spec string
@@ -44,7 +69,11 @@ func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int),
 		{id: 3, spec: cancelKey},
 	}
 
-	errCh := make(chan error, 1)
+	type result struct {
+		reg *Registration
+		err error
+	}
+	resultCh := make(chan result, 1)
 
 	go func() {
 		runtime.LockOSThread()
@@ -53,7 +82,7 @@ func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int),
 		for i := range defs {
 			mod, vk, err := parseHotkey(defs[i].spec)
 			if err != nil {
-				errCh <- fmt.Errorf("invalid hotkey '%s': %v", defs[i].spec, err)
+				resultCh <- result{err: fmt.Errorf("invalid hotkey '%s': %v", defs[i].spec, err)}
 				return
 			}
 			defs[i].mod = mod
@@ -67,7 +96,15 @@ func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int),
 		procRegisterHotKey := user32.NewProc("RegisterHotKey")
 		procUnregisterHotKey := user32.NewProc("UnregisterHotKey")
 		procGetMessageW := user32.NewProc("GetMessageW")
+		procPostThreadMessageW := user32.NewProc("PostThreadMessageW")
+		procGetCurrentThreadId := syscall.NewLazyDLL("kernel32.dll").NewProc("GetCurrentThreadId")
 
+		registered := make([]hotkeyDef, 0, len(defs))
+		defer func() {
+			for _, d := range registered {
+				procUnregisterHotKey.Call(0, uintptr(d.id))
+			}
+		}()
 		for _, d := range defs {
 			r, _, _ := procRegisterHotKey.Call(
 				0,
@@ -76,15 +113,10 @@ func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int),
 				uintptr(d.vk),
 			)
 			if r == 0 {
-				for _, od := range defs {
-					if od.id == d.id {
-						break
-					}
-					procUnregisterHotKey.Call(0, uintptr(od.id))
-				}
-				errCh <- fmt.Errorf("RegisterHotKey failed for '%s' (id=%d)", d.spec, d.id)
+				resultCh <- result{err: fmt.Errorf("RegisterHotKey failed for '%s' (id=%d)", d.spec, d.id)}
 				return
 			}
+			registered = append(registered, d)
 			if debug {
 				fmt.Printf("[hotkey-debug] RegisterHotKey succeeded for id=%d spec=%s\n", d.id, d.spec)
 			}
@@ -93,7 +125,11 @@ func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int),
 		if debug {
 			fmt.Printf("[hotkey] Registered global hotkeys: start=%s pause=%s cancel=%s\n", startKey, pauseKey, cancelKey)
 		}
-		errCh <- nil
+		threadID, _, _ := procGetCurrentThreadId.Call()
+		resultCh <- result{reg: &Registration{stop: func() {
+			const WM_QUIT = 0x0012
+			procPostThreadMessageW.Call(threadID, uintptr(WM_QUIT), 0, 0)
+		}}}
 
 		var msg struct {
 			Hwnd    uintptr
@@ -111,6 +147,12 @@ func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int),
 				fmt.Println("[hotkey] GetMessageW error; exiting hotkey loop")
 				return
 			}
+			if ret == 0 {
+				if debug {
+					fmt.Println("[hotkey] hotkey loop stopped")
+				}
+				return
+			}
 			if debug {
 				fmt.Printf("[hotkey-debug] msg: Message=0x%X WParam=0x%X LParam=0x%X\n", msg.Message, msg.WParam, msg.LParam)
 			}
@@ -125,20 +167,24 @@ func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int),
 	}()
 
 	select {
-	case err := <-errCh:
-		return err
+	case res := <-resultCh:
+		return res.reg, res.err
 	case <-time.After(2 * time.Second):
-		return fmt.Errorf("timeout registering hotkeys")
+		return nil, fmt.Errorf("timeout registering hotkeys")
 	}
 }
 
-func startLowLevelHook(startKey, pauseKey, cancelKey string, handler func(id int), debug bool) error {
+func startLowLevelHook(startKey, pauseKey, cancelKey string, handler func(id int), debug bool) (*Registration, error) {
 	type candidate struct {
 		id  int
 		mod uint32
 	}
 
-	errCh := make(chan error, 1)
+	type result struct {
+		reg *Registration
+		err error
+	}
+	resultCh := make(chan result, 1)
 	go func() {
 		runtime.LockOSThread()
 		defer runtime.UnlockOSThread()
@@ -156,7 +202,7 @@ func startLowLevelHook(startKey, pauseKey, cancelKey string, handler func(id int
 		for _, s := range specs {
 			mod, vk, err := parseHotkey(s.spec)
 			if err != nil {
-				errCh <- fmt.Errorf("invalid hotkey '%s': %v", s.spec, err)
+				resultCh <- result{err: fmt.Errorf("invalid hotkey '%s': %v", s.spec, err)}
 				return
 			}
 			lookup[vk] = append(lookup[vk], candidate{id: s.id, mod: mod})
@@ -170,7 +216,9 @@ func startLowLevelHook(startKey, pauseKey, cancelKey string, handler func(id int
 		procUnhookWindowsHookEx := user32.NewProc("UnhookWindowsHookEx")
 		procCallNextHookEx := user32.NewProc("CallNextHookEx")
 		procGetMessageW := user32.NewProc("GetMessageW")
+		procPostThreadMessageW := user32.NewProc("PostThreadMessageW")
 		procGetAsyncKeyState := user32.NewProc("GetAsyncKeyState")
+		procGetCurrentThreadId := syscall.NewLazyDLL("kernel32.dll").NewProc("GetCurrentThreadId")
 
 		const (
 			WH_KEYBOARD_LL = 13
@@ -280,15 +328,20 @@ func startLowLevelHook(startKey, pauseKey, cancelKey string, handler func(id int
 			0,
 		)
 		if hook == 0 {
-			errCh <- fmt.Errorf("SetWindowsHookExW failed")
+			resultCh <- result{err: fmt.Errorf("SetWindowsHookExW failed")}
 			return
 		}
+		defer procUnhookWindowsHookEx.Call(hook)
 
 		if debug {
 			fmt.Printf("[hotkey] low-level hook installed (WH_KEYBOARD_LL)\n")
 		}
 
-		errCh <- nil
+		threadID, _, _ := procGetCurrentThreadId.Call()
+		resultCh <- result{reg: &Registration{stop: func() {
+			const WM_QUIT = 0x0012
+			procPostThreadMessageW.Call(threadID, uintptr(WM_QUIT), 0, 0)
+		}}}
 
 		var msg struct {
 			Hwnd    uintptr
@@ -312,17 +365,16 @@ func startLowLevelHook(startKey, pauseKey, cancelKey string, handler func(id int
 			}
 		}
 
-		procUnhookWindowsHookEx.Call(hook)
 		if debug {
 			fmt.Println("[hotkey] low-level hook uninstalled")
 		}
 	}()
 
 	select {
-	case err := <-errCh:
-		return err
+	case res := <-resultCh:
+		return res.reg, res.err
 	case <-time.After(2 * time.Second):
-		return fmt.Errorf("timeout installing low-level hook")
+		return nil, fmt.Errorf("timeout installing low-level hook")
 	}
 }
 

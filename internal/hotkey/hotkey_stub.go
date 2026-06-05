@@ -15,7 +15,18 @@ package hotkey
 
 import "fmt"
 
+// Registration represents a registered hotkey set.
+type Registration struct{}
+
+// Stop releases registered hotkeys.
+func (r *Registration) Stop() {}
+
 // Register is not supported on non-Windows builds.
 func Register(startKey, pauseKey, cancelKey string, hook bool, handler func(id int), debug bool) error {
 	return fmt.Errorf("hotkey not supported on this platform")
+}
+
+// RegisterWithStop is not supported on non-Windows builds.
+func RegisterWithStop(startKey, pauseKey, cancelKey string, hook bool, handler func(id int), debug bool) (*Registration, error) {
+	return nil, fmt.Errorf("hotkey not supported on this platform")
 }

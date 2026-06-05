@@ -29,6 +29,23 @@ stt.exe
 *.out
 coverage.*
 
+# Keep checked-in GUI app icons while ignoring other build outputs
+!GUI/build/
+GUI/build/*
+!GUI/build/appicon.png
+!GUI/build/icons/
+GUI/build/icons/*
+!GUI/build/icons/icon16.png
+!GUI/build/icons/icon32.png
+!GUI/build/icons/icon48.png
+!GUI/build/icons/icon64.png
+!GUI/build/icons/icon128.png
+!GUI/build/icons/icon256.png
+!GUI/build/icons/icon512.png
+!GUI/build/windows/
+GUI/build/windows/*
+!GUI/build/windows/icon.ico
+
 # Go workspace and dependency scratch files
 go.work
 go.work.sum
