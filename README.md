@@ -207,6 +207,18 @@ wails build -platform windows/amd64
 
 交叉编译 GUI 时同样需要 Windows 版 PortAudio 和 mingw-w64。GUI 构建还会通过 `scripts/build-ffmpeg-windows-amd64.sh` 编译裁剪版 FFmpeg/libav 静态库，并使用 `GOFLAGS=-tags=gui_ffmpeg_cgo` 启用内置转码实现；建议直接参考 CI 配置。
 
+## 第三方组件
+
+STT for Windows 使用 PortAudio 提供音频输入/输出能力。
+
+GUI 版本内嵌了裁剪版 FFmpeg/libav，用于音频解码、重采样、编码和封装。
+因此 GUI 版无需额外安装 `ffmpeg`。
+
+FFmpeg 根据构建配置不同，使用 LGPL-2.1-or-later 或 GPL-2.0-or-later 授权。
+PortAudio 使用 MIT License 授权。本项目使用 GPL-3.0 授权，并且不会有意启用 FFmpeg 的 nonfree 组件。
+
+详情见 `THIRD_PARTY_NOTICES.txt`。
+
 ## 临时文件与缓存
 
 - 录音阶段会创建 `RecordTemp_<uuid>.wav` 和转码后的 `RecordTemp_<uuid>.<ext>`。

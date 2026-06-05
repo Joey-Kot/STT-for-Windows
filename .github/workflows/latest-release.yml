@@ -74,6 +74,13 @@ jobs:
           make -j"$(nproc)"
           make install
 
+      - name: Check FFmpeg nonfree is disabled
+        run: |
+          if grep -n -- '--enable-nonfree' scripts/build-ffmpeg-windows-amd64.sh; then
+            echo "FFmpeg nonfree components must not be enabled." >&2
+            exit 1
+          fi
+
       - name: Build FFmpeg for Windows GUI
         run: scripts/build-ffmpeg-windows-amd64.sh
 
@@ -143,9 +150,9 @@ jobs:
         run: |
           mkdir -p dist/gui-package
           cp GUI/build/bin/STT.exe dist/gui-package/
-          cp README.md LICENSE dist/gui-package/
+          cp README.md LICENSE THIRD_PARTY_NOTICES.txt dist/gui-package/
           cd dist/gui-package
-          python3 -m zipfile -c ../stt-gui-windows-amd64.zip STT.exe README.md LICENSE
+          python3 -m zipfile -c ../stt-gui-windows-amd64.zip STT.exe README.md LICENSE THIRD_PARTY_NOTICES.txt
           cd ../..
           sha256sum dist/stt-gui-windows-amd64.zip > dist/stt-gui-windows-amd64.zip.sha256
 

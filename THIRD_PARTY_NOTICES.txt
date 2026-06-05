@@ -1,0 +1,34 @@
+Third Party Notices
+
+STT for Windows uses the following third-party components:
+
+1. FFmpeg/libav
+
+Used by the GUI version for audio decoding, resampling, encoding, and muxing.
+
+FFmpeg is a multimedia framework developed by the FFmpeg project.
+FFmpeg is licensed under the GNU Lesser General Public License (LGPL) version 2.1 or later,
+or the GNU General Public License (GPL) version 2 or later, depending on the build configuration.
+
+This project builds and statically links a trimmed FFmpeg/libav configuration for the GUI version,
+used only for audio processing required by STT workflows.
+
+No FFmpeg nonfree components are intentionally enabled.
+
+FFmpeg project:
+https://ffmpeg.org/
+
+FFmpeg legal information:
+https://ffmpeg.org/legal.html
+
+FFmpeg source code:
+https://ffmpeg.org/download.html
+
+2. PortAudio
+
+Used for cross-platform audio input/output support.
+
+PortAudio is licensed under the MIT License.
+
+PortAudio project:
+https://www.portaudio.com/
