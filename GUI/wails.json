@@ -1,0 +1,13 @@
+{
+  "$schema": "https://wails.io/schemas/config.v2.json",
+  "name": "stt-gui",
+  "outputfilename": "stt-gui",
+  "frontend:install": "echo no frontend install required",
+  "frontend:build": "echo using checked-in frontend/dist",
+  "frontend:dev:watcher": "echo no dev watcher configured",
+  "frontend:dev:serverUrl": "",
+  "author": {
+    "name": "Joey Kot",
+    "email": "joey.kot.x@gmail.com"
+  }
+}

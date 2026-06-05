@@ -33,6 +33,19 @@
 
 构建流程会在 Ubuntu runner 上运行测试，交叉编译 PortAudio 静态库，并生成 Windows amd64 版 `stt.exe`。构建完成后会把产物打包为 `stt-windows-amd64.zip`，覆盖上传到标签名为 `Latest` 的 Release 中，同时上传对应的 `stt-windows-amd64.zip.sha256` 校验文件。
 
+GUI 客户端位于 `GUI/`，同一条 Latest Release workflow 会额外安装 Wails CLI，执行 `wails build -platform windows/amd64 -clean`，并上传 `stt-gui-windows-amd64.zip`、`stt-gui-windows-amd64.zip.sha256` 与 `source.zip`。如果只是想触发一次自动构建验证，向 `main` 分支提交一个普通 commit 即可自动运行该 workflow；也可以在 Actions 页面手动运行 `Build and Publish Latest`。
+
+### 在 Windows 上本地构建 GUI
+
+GUI 使用 Wails v2，源码与配置在 `GUI/` 下，独立于根目录 CLI 入口。准备好 Go、Wails CLI、ffmpeg 与 PortAudio 相关依赖后，可在 Windows 上执行：
+
+```bash
+cd GUI
+wails build -platform windows/amd64
+```
+
+GUI 默认读取 / 创建 `%APPDATA%/stt/config.json`，不会改变 CLI 默认读取当前目录 `config.json` 的逻辑。
+
 ### 在 Windows 上本地构建（动态链接 PortAudio DLL）
 
 Windows（开发 / 动态链接）——快速上手

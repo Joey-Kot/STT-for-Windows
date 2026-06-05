@@ -1,0 +1,9 @@
+{
+  "scripts": {
+    "dev": "echo no dev watcher configured",
+    "build": "echo using checked-in frontend/dist",
+    "preview": "echo open frontend/dist/index.html"
+  },
+  "dependencies": {},
+  "devDependencies": {}
+}

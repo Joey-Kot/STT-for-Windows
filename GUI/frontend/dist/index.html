@@ -1,0 +1,43 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>STT GUI</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <main class="panel">
+    <header class="drag-zone">
+      <span id="dot" class="dot idle"></span>
+      <span id="state">Idle</span>
+      <button id="hide" class="ghost" title="Hide">—</button>
+    </header>
+    <section class="controls">
+      <button id="record" class="record-button"><span class="mic">●</span><span id="record-label">Record</span></button>
+      <button id="pause" class="pause-button" disabled><span id="pause-icon">Ⅱ</span><span id="pause-label">Pause</span></button>
+    </section>
+    <footer>
+      <span id="message" class="message">Starting…</span>
+      <nav>
+        <button id="settings-link" class="link">Settings</button>
+        <button id="cancel" class="link danger" disabled>Cancel</button>
+      </nav>
+    </footer>
+  </main>
+  <div id="settings-backdrop" class="settings-backdrop hidden">
+    <section class="settings">
+      <aside id="tabs"></aside>
+      <article>
+        <header><div><h2 id="settings-title">JSON Config</h2><small id="config-path"></small></div><button id="close-settings" class="ghost">×</button></header>
+        <p id="settings-hint" class="hint">MVP uses a safe JSON editor while preserving the original CLI-compatible schema. Token values stay in the JSON file and are not logged.</p>
+        <textarea id="config-json" spellcheck="false"></textarea>
+        <p id="save-warning" class="warning hidden">Wait until recording/uploading finishes before saving.</p>
+        <p id="error" class="error hidden"></p>
+        <footer><button id="cancel-settings">Cancel</button><button id="save" class="primary">Save</button></footer>
+      </article>
+    </section>
+  </div>
+  <script src="app.js"></script>
+</body>
+</html>

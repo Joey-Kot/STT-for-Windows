@@ -30,6 +30,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
+      - name: Install Wails CLI
+        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.12.0
+
       - name: Install build dependencies
         run: |
           sudo apt-get update
@@ -44,7 +47,7 @@ jobs:
             pkg-config \
             portaudio19-dev
 
-      - name: Test
+      - name: Test CLI packages
         run: go test ./...
 
       - name: Build PortAudio for Windows
@@ -76,12 +79,41 @@ jobs:
           go build -trimpath -ldflags='-s -w -extldflags "-static"' -o dist/package/stt.exe .
           cp README.md LICENSE dist/package/
 
-      - name: Package
+      - name: Package CLI
         run: |
           cd dist/package
           python3 -m zipfile -c ../stt-windows-amd64.zip stt.exe README.md LICENSE
           cd ../..
           sha256sum dist/stt-windows-amd64.zip > dist/stt-windows-amd64.zip.sha256
+
+      - name: Download GUI Go modules
+        working-directory: GUI
+        run: go mod download
+
+      - name: Build Windows GUI
+        working-directory: GUI
+        env:
+          CC: x86_64-w64-mingw32-gcc
+          CGO_ENABLED: "1"
+          GOOS: windows
+          GOARCH: amd64
+          PKG_CONFIG_ALLOW_CROSS: "1"
+          PKG_CONFIG_PATH: ${{ github.workspace }}/build/portaudio-win/lib/pkgconfig
+        run: |
+          export CGO_CFLAGS="$(pkg-config --cflags portaudio-2.0)"
+          export CGO_LDFLAGS="$(pkg-config --libs --static portaudio-2.0)"
+          wails build -platform windows/amd64 -clean
+
+      - name: Package GUI and source
+        run: |
+          mkdir -p dist/gui-package
+          cp GUI/build/bin/stt-gui.exe dist/gui-package/
+          cp README.md LICENSE dist/gui-package/
+          cd dist/gui-package
+          python3 -m zipfile -c ../stt-gui-windows-amd64.zip stt-gui.exe README.md LICENSE
+          cd ../..
+          sha256sum dist/stt-gui-windows-amd64.zip > dist/stt-gui-windows-amd64.zip.sha256
+          git archive --format zip --output dist/source.zip HEAD
 
       - name: Move Latest tag
         run: |
@@ -103,4 +135,7 @@ jobs:
           gh release upload Latest \
             dist/stt-windows-amd64.zip \
             dist/stt-windows-amd64.zip.sha256 \
+            dist/stt-gui-windows-amd64.zip \
+            dist/stt-gui-windows-amd64.zip.sha256 \
+            dist/source.zip \
             --clobber
