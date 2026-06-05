@@ -12,17 +12,25 @@
 package ffmpeg
 
 import (
-	"bytes"
 	"fmt"
-	"os/exec"
 	"strconv"
 	"strings"
 
 	"stt/internal/config"
 )
 
-// Convert converts input audio into the configured codec/container.
-func Convert(cfg config.Config, inPath, outPath string, rate int) error {
+type conversionSettings struct {
+	CodecKey        string
+	FFCodec         string
+	CodecHasBitrate bool
+	Channels        int
+	SampleRate      int
+	Bitrate         int
+	Depth           int
+	SampleFormat    string
+}
+
+func settingsFor(cfg config.Config, rate int) (conversionSettings, error) {
 	codecKey := strings.ToLower(cfg.CODECS)
 	channels := cfg.Channels
 	if channels <= 0 {
@@ -43,41 +51,50 @@ func Convert(cfg config.Config, inPath, outPath string, rate int) error {
 
 	ffCodec, codecHasBitrate := ffmpegCodecFor(codecKey)
 	if ffCodec == "" {
-		return fmt.Errorf("unsupported codec: %s", cfg.CODECS)
+		return conversionSettings{}, fmt.Errorf("unsupported codec: %s", cfg.CODECS)
 	}
 
-	args := []string{"-y", "-i", inPath, "-ac", strconv.Itoa(channels), "-ar", strconv.Itoa(sr)}
-	if strings.HasPrefix(ffCodec, "pcm_") {
-		args = append(args, "-c:a", ffCodec)
-	} else {
-		args = append(args, "-c:a", ffCodec)
-		if codecHasBitrate {
-			args = append(args, "-b:a", fmt.Sprintf("%dk", bitrate))
+	settings := conversionSettings{
+		CodecKey:        codecKey,
+		FFCodec:         ffCodec,
+		CodecHasBitrate: codecHasBitrate,
+		Channels:        channels,
+		SampleRate:      sr,
+		Bitrate:         bitrate,
+		Depth:           depth,
+	}
+	if !strings.HasPrefix(ffCodec, "pcm_") {
+		settings.SampleFormat = sampleFormatForDepth(depth)
+	}
+	return settings, nil
+}
+
+func ffmpegArgsFor(settings conversionSettings, inPath, outPath string) []string {
+	args := []string{"-y", "-i", inPath, "-ac", strconv.Itoa(settings.Channels), "-ar", strconv.Itoa(settings.SampleRate), "-c:a", settings.FFCodec}
+	if !strings.HasPrefix(settings.FFCodec, "pcm_") {
+		if settings.CodecHasBitrate {
+			args = append(args, "-b:a", fmt.Sprintf("%dk", settings.Bitrate))
 		}
-		switch depth {
-		case 8:
-			args = append(args, "-sample_fmt", "u8")
-		case 16:
-			args = append(args, "-sample_fmt", "s16")
-		case 24:
-			args = append(args, "-sample_fmt", "s24")
-		case 32:
-			args = append(args, "-sample_fmt", "s32")
+		if settings.SampleFormat != "" {
+			args = append(args, "-sample_fmt", settings.SampleFormat)
 		}
 	}
+	return append(args, outPath)
+}
 
-	args = append(args, outPath)
-
-	if cfg.FFMPEG_DEBUG {
-		fmt.Printf("[ffmpeg] executing: ffmpeg %s\n", strings.Join(args, " "))
+func sampleFormatForDepth(depth int) string {
+	switch depth {
+	case 8:
+		return "u8"
+	case 16:
+		return "s16"
+	case 24:
+		return "s24"
+	case 32:
+		return "s32"
+	default:
+		return ""
 	}
-	cmd := exec.Command("ffmpeg", args...)
-	var stderr bytes.Buffer
-	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("ffmpeg failed: %v\n%s", err, stderr.String())
-	}
-	return nil
 }
 
 func ffmpegCodecFor(key string) (string, bool) {

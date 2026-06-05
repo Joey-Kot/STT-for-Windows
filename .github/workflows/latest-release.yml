@@ -43,12 +43,16 @@ jobs:
             autoconf \
             automake \
             build-essential \
+            curl \
             git \
             libasound2-dev \
             libtool \
             mingw-w64 \
+            nasm \
             pkg-config \
-            portaudio19-dev
+            portaudio19-dev \
+            yasm \
+            xz-utils
 
       - name: Test
         run: go test ./...
@@ -69,6 +73,9 @@ jobs:
             CC=x86_64-w64-mingw32-gcc
           make -j"$(nproc)"
           make install
+
+      - name: Build FFmpeg for Windows GUI
+        run: scripts/build-ffmpeg-windows-amd64.sh
 
       - name: Build Windows binary
         env:
@@ -101,9 +108,12 @@ jobs:
           export CC=x86_64-w64-mingw32-gcc
           export CGO_ENABLED=1
           export PKG_CONFIG_ALLOW_CROSS=1
-          export PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/build/portaudio-win/lib/pkgconfig"
-          export CGO_CFLAGS="$(pkg-config --cflags portaudio-2.0)"
-          export CGO_LDFLAGS="$(pkg-config --libs --static portaudio-2.0)"
+          export PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/build/portaudio-win/lib/pkgconfig:${GITHUB_WORKSPACE}/build/ffmpeg-win/lib/pkgconfig"
+          export CGO_CFLAGS="$(pkg-config --cflags portaudio-2.0 libavformat libavcodec libswresample libavutil)"
+          ffmpeg_ldflags="$(pkg-config --libs --static libavformat libavcodec libswresample libavutil)"
+          portaudio_ldflags="$(pkg-config --libs --static portaudio-2.0)"
+          export CGO_LDFLAGS="-Wl,--start-group ${ffmpeg_ldflags} ${portaudio_ldflags} -Wl,--end-group"
+          export GOFLAGS="-tags=gui_ffmpeg_cgo"
           wails build -platform windows/amd64 -clean -skipbindings -s -ldflags='-s -w -extldflags "-static"'
 
       - name: Package GUI
