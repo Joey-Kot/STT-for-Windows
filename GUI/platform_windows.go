@@ -9,19 +9,32 @@
 // implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 // See <https://www.gnu.org/licenses/> for more details.
 
-package app
+//go:build windows
+
+package main
 
 import (
-	"stt/internal/appcore"
-	"stt/internal/config"
+	"strconv"
+
+	"golang.org/x/sys/windows/registry"
 )
 
-// RunRecordMode starts hotkeys and runs the recording loop.
-func RunRecordMode(cfg config.Config) error {
-	return appcore.RunRecordMode(cfg)
-}
+func detectRoundedCorners() bool {
+	key, err := registry.OpenKey(registry.LOCAL_MACHINE, `SOFTWARE\Microsoft\Windows NT\CurrentVersion`, registry.QUERY_VALUE)
+	if err != nil {
+		return false
+	}
+	defer key.Close()
 
-// RunFileMode uploads an existing file and writes the result to a .txt file.
-func RunFileMode(cfg config.Config, inputPath string, outputPath string) error {
-	return appcore.RunFileMode(cfg, inputPath, outputPath)
+	build, _, err := key.GetStringValue("CurrentBuildNumber")
+	if err != nil {
+		return false
+	}
+
+	n, err := strconv.Atoi(build)
+	if err != nil {
+		return false
+	}
+
+	return n >= 22000
 }

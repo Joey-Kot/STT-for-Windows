@@ -69,7 +69,7 @@ func usage() {
 
 [网络请求配置]
   -request-timeout <int>
-        请求超时秒数（默认 30）
+        请求超时秒数（默认 60）
   -max-retry <int>
         上传最大重试次数（默认 3）
   -retry-base-delay <float>
@@ -81,13 +81,13 @@ func usage() {
 
 [热键配置]
   -start-key <string>
-        开始/停止热键（例如 "alt+q"）
+        开始/停止热键（例如 "ctrl+alt+q"）
   -pause-key <string>
-        暂停/恢复热键（例如 "alt+s"）
+        暂停/恢复热键（例如 "ctrl+alt+s"）
   -cancel-key <string>
-        取消录音热键（例如 "esc"）
+        取消录音热键（例如 "alt+esc"）
   -hotkeyhook <true|false>
-        是否使用低级键盘钩子 (WH_KEYBOARD_LL) 来独占热键（默认关闭）。
+        是否使用低级键盘钩子 (WH_KEYBOARD_LL) 来独占热键（默认开启）。
 
 [缓存配置]
   -cache-dir <string>

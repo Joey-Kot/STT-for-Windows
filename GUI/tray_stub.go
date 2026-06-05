@@ -9,19 +9,10 @@
 // implied warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 // See <https://www.gnu.org/licenses/> for more details.
 
-package app
+//go:build !windows
 
-import (
-	"stt/internal/appcore"
-	"stt/internal/config"
-)
+package main
 
-// RunRecordMode starts hotkeys and runs the recording loop.
-func RunRecordMode(cfg config.Config) error {
-	return appcore.RunRecordMode(cfg)
-}
+func startTray(app *App) {}
 
-// RunFileMode uploads an existing file and writes the result to a .txt file.
-func RunFileMode(cfg config.Config, inputPath string, outputPath string) error {
-	return appcore.RunFileMode(cfg, inputPath, outputPath)
-}
+func stopTray() {}
