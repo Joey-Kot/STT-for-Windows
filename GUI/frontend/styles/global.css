@@ -355,6 +355,57 @@ textarea,
   box-shadow: 0 0 0 2px rgba(97, 203, 187, 0.16);
 }
 
+.about {
+  margin: 2px 0 22px;
+}
+
+.about h2 {
+  margin: 0 0 18px;
+  color: #f5fbfa;
+  font-size: 26px;
+  font-weight: 700;
+  line-height: 1.2;
+}
+
+.aboutDetails {
+  display: grid;
+  grid-template-columns: 90px minmax(0, 1fr);
+  gap: 10px 16px;
+  margin: 0;
+}
+
+.aboutDetails dt {
+  color: #9eafb3;
+  font-size: 13px;
+}
+
+.aboutDetails dd {
+  min-width: 0;
+  margin: 0;
+  color: #e7f0f1;
+  font-size: 13px;
+  overflow-wrap: anywhere;
+}
+
+.aboutDetails a {
+  color: #6fd6c2;
+  text-decoration: none;
+}
+
+.aboutDetails a:hover {
+  text-decoration: underline;
+}
+
+.aboutDivider {
+  margin: 6px 0 14px;
+  padding-top: 16px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+  color: #9eafb3;
+  font-size: 12px;
+  font-weight: 650;
+  text-transform: uppercase;
+}
+
 .checkField {
   align-items: center;
 }

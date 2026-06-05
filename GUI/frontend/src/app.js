@@ -65,10 +65,20 @@ const groups = [
     fields: ["FFMPEG_DEBUG", "RECORD_DEBUG", "HOTKEY_DEBUG", "UPLOAD_DEBUG"]
   },
   {
-    name: "Advanced",
+    name: "About",
     fields: []
   }
 ];
+
+const aboutInfo = {
+  title: "STT for Windows",
+  rows: [
+    ["Author", "Joey Kot"],
+    ["Email", "joey.kot.x@gmail.com"],
+    ["License", "GPL-3.0"],
+    ["GitHub", "github.com/Joey-Kot/STT-for-Windows"]
+  ]
+};
 
 const fieldMeta = {
   API_ENDPOINT: { label: "API endpoint", type: "url" },
@@ -277,44 +287,98 @@ function renderTabs() {
   }
 }
 
+function getUngroupedConfigFields() {
+  return Object.keys(state.config).filter((key) => !groups.some((item) => item.name !== "About" && item.fields.includes(key)));
+}
+
+function renderAbout() {
+  const section = document.createElement("section");
+  section.className = "about";
+
+  const title = document.createElement("h2");
+  title.textContent = aboutInfo.title;
+  section.appendChild(title);
+
+  const details = document.createElement("dl");
+  details.className = "aboutDetails";
+  for (const [label, value] of aboutInfo.rows) {
+    const term = document.createElement("dt");
+    term.textContent = `${label}:`;
+    details.appendChild(term);
+
+    const description = document.createElement("dd");
+    if (label === "Email") {
+      const link = document.createElement("a");
+      link.href = `mailto:${value}`;
+      link.textContent = value;
+      description.appendChild(link);
+    } else if (label === "GitHub") {
+      const link = document.createElement("a");
+      link.href = `https://${value}`;
+      link.target = "_blank";
+      link.rel = "noreferrer";
+      link.textContent = value;
+      description.appendChild(link);
+    } else {
+      description.textContent = value;
+    }
+    details.appendChild(description);
+  }
+  section.appendChild(details);
+  el.configForm.appendChild(section);
+}
+
+function renderConfigField(key) {
+  const meta = fieldMeta[key] || { label: key, type: typeof state.config[key] === "boolean" ? "checkbox" : "text" };
+  const row = document.createElement("label");
+  row.className = meta.type === "checkbox" ? "field checkField" : "field";
+  row.htmlFor = `field-${key}`;
+
+  const label = document.createElement("span");
+  label.textContent = meta.label;
+  row.appendChild(label);
+
+  let input;
+  if (meta.type === "textarea") {
+    input = document.createElement("textarea");
+    input.rows = key === "ExtraConfig" ? 6 : 3;
+  } else {
+    input = document.createElement("input");
+    input.type = meta.type;
+    if (meta.step) {
+      input.step = meta.step;
+    }
+  }
+  input.id = `field-${key}`;
+  input.dataset.key = key;
+  if (meta.type === "checkbox") {
+    input.checked = Boolean(state.config[key]);
+  } else {
+    input.value = state.config[key] ?? "";
+  }
+  input.addEventListener("input", () => updateConfigValue(key, input, meta.type));
+  row.appendChild(input);
+  el.configForm.appendChild(row);
+}
+
 function renderFields() {
   el.configForm.innerHTML = "";
   const group = groups.find((item) => item.name === state.activeGroup);
-  const fields = group.name === "Advanced"
-    ? Object.keys(state.config).filter((key) => !groups.some((item) => item.name !== "Advanced" && item.fields.includes(key)))
-    : group.fields;
+  const fields = group.name === "About" ? getUngroupedConfigFields() : group.fields;
+
+  if (group.name === "About") {
+    renderAbout();
+
+    if (fields.length > 0) {
+      const divider = document.createElement("div");
+      divider.className = "aboutDivider";
+      divider.textContent = "Additional config";
+      el.configForm.appendChild(divider);
+    }
+  }
 
   for (const key of fields) {
-    const meta = fieldMeta[key] || { label: key, type: typeof state.config[key] === "boolean" ? "checkbox" : "text" };
-    const row = document.createElement("label");
-    row.className = meta.type === "checkbox" ? "field checkField" : "field";
-    row.htmlFor = `field-${key}`;
-
-    const label = document.createElement("span");
-    label.textContent = meta.label;
-    row.appendChild(label);
-
-    let input;
-    if (meta.type === "textarea") {
-      input = document.createElement("textarea");
-      input.rows = key === "ExtraConfig" ? 6 : 3;
-    } else {
-      input = document.createElement("input");
-      input.type = meta.type;
-      if (meta.step) {
-        input.step = meta.step;
-      }
-    }
-    input.id = `field-${key}`;
-    input.dataset.key = key;
-    if (meta.type === "checkbox") {
-      input.checked = Boolean(state.config[key]);
-    } else {
-      input.value = state.config[key] ?? "";
-    }
-    input.addEventListener("input", () => updateConfigValue(key, input, meta.type));
-    row.appendChild(input);
-    el.configForm.appendChild(row);
+    renderConfigField(key);
   }
 }
 
