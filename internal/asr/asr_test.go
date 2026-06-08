@@ -43,22 +43,9 @@ func TestTranscribeRetryExhaustedError(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 
-	tmp, err := os.CreateTemp("", "asr-test-*.wav")
-	if err != nil {
-		t.Fatalf("CreateTemp failed: %v", err)
-	}
-	if _, err := tmp.Write([]byte("test")); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		t.Fatalf("write temp file failed: %v", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmp.Name())
-		t.Fatalf("close temp file failed: %v", err)
-	}
-	defer os.Remove(tmp.Name())
+	audioPath := tempAudioFile(t, "test")
 
-	_, _, err = client.Transcribe(context.Background(), tmp.Name())
+	_, _, err = client.Transcribe(context.Background(), audioPath)
 	if err == nil {
 		t.Fatalf("expected error")
 	}
@@ -104,22 +91,9 @@ func TestExtraConfigNullDeletesBaseField(t *testing.T) {
 		t.Fatalf("New failed: %v", err)
 	}
 
-	tmp, err := os.CreateTemp("", "asr-test-*.wav")
-	if err != nil {
-		t.Fatalf("CreateTemp failed: %v", err)
-	}
-	if _, err := tmp.Write([]byte("test")); err != nil {
-		_ = tmp.Close()
-		_ = os.Remove(tmp.Name())
-		t.Fatalf("write temp file failed: %v", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmp.Name())
-		t.Fatalf("close temp file failed: %v", err)
-	}
-	defer os.Remove(tmp.Name())
+	audioPath := tempAudioFile(t, "test")
 
-	text, _, err := client.Transcribe(context.Background(), tmp.Name())
+	text, _, err := client.Transcribe(context.Background(), audioPath)
 	if err != nil {
 		t.Fatalf("Transcribe failed: %v", err)
 	}
@@ -129,4 +103,129 @@ func TestExtraConfigNullDeletesBaseField(t *testing.T) {
 	if !requestChecked {
 		t.Fatalf("server did not check request")
 	}
+}
+
+func TestNewRejectsInvalidExtraConfig(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.ExtraConfig = `{"unterminated"`
+
+	if _, err := New(cfg, nil); err == nil {
+		t.Fatalf("New succeeded, want invalid extra-config error")
+	}
+}
+
+func TestTranscribeRejectsEmptyEndpointBeforeOpeningFile(t *testing.T) {
+	cfg := config.DefaultConfig()
+	cfg.APIEndpoint = ""
+	client, err := New(cfg, nil)
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	_, _, err = client.Transcribe(context.Background(), "does-not-need-to-exist.wav")
+	if err == nil || err.Error() != "API endpoint is empty" {
+		t.Fatalf("Transcribe error = %v, want API endpoint is empty", err)
+	}
+}
+
+func TestTranscribeSendsMultipartFieldsAuthAndExtractsConfiguredPath(t *testing.T) {
+	requestChecked := false
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodPost {
+			http.Error(w, fmt.Sprintf("method = %s, want POST", r.Method), http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("Authorization"); got != "Bearer token-123" {
+			http.Error(w, fmt.Sprintf("Authorization = %q", got), http.StatusBadRequest)
+			return
+		}
+		if got := r.Header.Get("User-Agent"); got != "stt-go-client/1.0" {
+			http.Error(w, fmt.Sprintf("User-Agent = %q", got), http.StatusBadRequest)
+			return
+		}
+		if err := r.ParseMultipartForm(1 << 20); err != nil {
+			http.Error(w, fmt.Sprintf("parse multipart form: %v", err), http.StatusBadRequest)
+			return
+		}
+		checks := map[string]string{
+			"model":       "base",
+			"language":    "en",
+			"prompt":      "hello",
+			"temperature": "0.25",
+			"stream":      "false",
+			"metadata":    `{"tier":"test"}`,
+		}
+		for key, want := range checks {
+			if got := r.FormValue(key); got != want {
+				http.Error(w, fmt.Sprintf("%s = %q, want %q", key, got, want), http.StatusBadRequest)
+				return
+			}
+		}
+		files := r.MultipartForm.File["file"]
+		if len(files) != 1 || files[0].Filename == "" {
+			http.Error(w, "missing uploaded file", http.StatusBadRequest)
+			return
+		}
+		requestChecked = true
+		_, _ = w.Write([]byte(`{"data":{"items":[{"text":"configured path"}]}}`))
+	}))
+	defer server.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.APIEndpoint = server.URL
+	cfg.Token = "token-123"
+	cfg.Model = "base"
+	cfg.Language = "en"
+	cfg.Prompt = "hello"
+	cfg.TEXTPath = "data.items[0].text"
+	cfg.ExtraConfig = `{"temperature":0.25,"stream":false,"metadata":{"tier":"test"}}`
+	cfg.MaxRetry = 1
+	cfg.RequestTimeout = 2
+
+	client, err := New(cfg, &http.Client{Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+
+	text, raw, err := client.Transcribe(context.Background(), tempAudioFile(t, "audio"))
+	if err != nil {
+		t.Fatalf("Transcribe failed: %v", err)
+	}
+	if text != "configured path" {
+		t.Fatalf("text = %q, want configured path", text)
+	}
+	if string(raw) != `{"data":{"items":[{"text":"configured path"}]}}` {
+		t.Fatalf("raw = %s", raw)
+	}
+	if !requestChecked {
+		t.Fatalf("server did not check request")
+	}
+}
+
+func TestFormatResponse(t *testing.T) {
+	if got := formatResponse(nil); got != "<empty>" {
+		t.Fatalf("formatResponse(nil) = %q", got)
+	}
+	if got := formatResponse([]byte("hello")); got != "hello" {
+		t.Fatalf("formatResponse(text) = %q", got)
+	}
+	if got := formatResponse([]byte{0xff, 0x00}); got != "<binary 2 bytes, hex: ff00>" {
+		t.Fatalf("formatResponse(binary) = %q", got)
+	}
+}
+
+func tempAudioFile(t *testing.T, contents string) string {
+	t.Helper()
+	tmp, err := os.CreateTemp(t.TempDir(), "asr-test-*.wav")
+	if err != nil {
+		t.Fatalf("CreateTemp failed: %v", err)
+	}
+	if _, err := tmp.Write([]byte(contents)); err != nil {
+		_ = tmp.Close()
+		t.Fatalf("write temp file failed: %v", err)
+	}
+	if err := tmp.Close(); err != nil {
+		t.Fatalf("close temp file failed: %v", err)
+	}
+	return tmp.Name()
 }

@@ -51,3 +51,88 @@ func TestParseKeyAndIndexes(t *testing.T) {
 		t.Fatalf("unexpected parse result: key=%s idxs=%v", key, idxs)
 	}
 }
+
+func TestExtractTextFromResponse(t *testing.T) {
+	tests := []struct {
+		name     string
+		body     []byte
+		textPath string
+		want     string
+	}{
+		{name: "configured path", body: []byte(`{"data":{"items":[{"transcript":"hello"}]}}`), textPath: "data.items[0].transcript", want: "hello"},
+		{name: "default text string", body: []byte(`{"text":"fallback"}`), want: "fallback"},
+		{name: "default text integer", body: []byte(`{"text":42}`), want: "42"},
+		{name: "default text float", body: []byte(`{"text":42.5}`), want: "42.5"},
+		{name: "default text bool", body: []byte(`{"text":true}`), want: "true"},
+		{name: "first non-empty string field", body: []byte(`{"empty":"","other":"value"}`), want: "value"},
+		{name: "invalid json", body: []byte(`not-json`), textPath: "text", want: ""},
+		{name: "missing configured path falls back", body: []byte(`{"text":"fallback"}`), textPath: "missing.path", want: "fallback"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := ExtractTextFromResponse(tt.body, tt.textPath); got != tt.want {
+				t.Fatalf("ExtractTextFromResponse() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
+
+func TestExtractByPathCoercesScalarValues(t *testing.T) {
+	root := map[string]interface{}{
+		"int":   float64(7),
+		"float": float64(7.5),
+		"bool":  true,
+	}
+
+	tests := map[string]string{
+		"int":   "7",
+		"float": "7.5",
+		"bool":  "true",
+	}
+	for path, want := range tests {
+		if got, ok := ExtractByPath(root, path); !ok || got != want {
+			t.Fatalf("ExtractByPath(%q) = %q, %v; want %q, true", path, got, ok, want)
+		}
+	}
+}
+
+func TestExtractByPathRejectsInvalidPaths(t *testing.T) {
+	root := map[string]interface{}{
+		"items": []interface{}{"zero"},
+		"nested": map[string]interface{}{
+			"value": map[string]interface{}{"notScalar": []interface{}{"x"}},
+		},
+	}
+
+	paths := []string{
+		"",
+		"items[-1]",
+		"items[bad]",
+		"items[]",
+		"items[0",
+		"items[0]extra",
+		"items.value",
+		"missing.value",
+		"nested.value.notScalar",
+	}
+	for _, path := range paths {
+		if got, ok := ExtractByPath(root, path); ok {
+			t.Fatalf("ExtractByPath(%q) = %q, true; want not found", path, got)
+		}
+	}
+}
+
+func TestParseKeyAndIndexesAdditionalForms(t *testing.T) {
+	key, idxs, err := ParseKeyAndIndexes("[2]")
+	if err != nil {
+		t.Fatalf("ParseKeyAndIndexes([2]) error: %v", err)
+	}
+	if key != "" || len(idxs) != 1 || idxs[0] != 2 {
+		t.Fatalf("ParseKeyAndIndexes([2]) = key %q indexes %v, want empty key and [2]", key, idxs)
+	}
+
+	if _, _, err := ParseKeyAndIndexes(""); err == nil {
+		t.Fatalf("ParseKeyAndIndexes(empty) succeeded, want error")
+	}
+}
