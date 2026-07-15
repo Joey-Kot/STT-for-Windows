@@ -21,9 +21,9 @@ Windows 桌面语音转写客户端，支持 GUI 浮窗和 CLI 两种使用方�
 
 | 文件 | 说明 |
 |------|------|
-| `stt-cli-windows-amd64.zip` | CLI 版本，压缩包内为 `stt.exe` |
+| `stt-cli-windows-amd64.zip` | CLI 版本，压缩包内为 `stt.exe` 及授权文件 |
 | `stt-cli-windows-amd64.zip.sha256` | CLI 压缩包 SHA256 |
-| `stt-gui-windows-amd64.zip` | GUI 版本，压缩包内为 `STT.exe` |
+| `stt-gui-windows-amd64.zip` | GUI 版本，压缩包内为 `STT.exe` 及授权文件 |
 | `stt-gui-windows-amd64.zip.sha256` | GUI 压缩包 SHA256 |
 
 运行前请确认：
@@ -217,7 +217,8 @@ GUI 版本内嵌了裁剪版 FFmpeg/libav，用于音频解码、重采样、编
 FFmpeg 根据构建配置不同，使用 LGPL-2.1-or-later 或 GPL-2.0-or-later 授权。
 PortAudio 使用 MIT License 授权。本项目使用 GPL-3.0 授权，并且不会有意启用 FFmpeg 的 nonfree 组件。
 
-详情见 `THIRD_PARTY_NOTICES.txt`。
+详情及完整许可证文本见 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) 和
+[`THIRD_PARTY_LICENSES/`](THIRD_PARTY_LICENSES/)。
 
 ## 临时文件与缓存
 
@@ -240,3 +241,10 @@ PortAudio 使用 MIT License 授权。本项目使用 GPL-3.0 授权，并且不
 - `TOKEN` 属于敏感信息，请勿提交到公开仓库或日志中。
 - `UPLOAD_DEBUG` 可能输出请求/响应内容，排查问题后建议关闭。
 - 将 `VERIFY_SSL` 设为 `false` 会跳过 HTTPS 证书验证，在不受信任网络中存在风险。
+
+## License
+
+This project is licensed under the GNU General Public License v3.0 or later.
+See [LICENSE](LICENSE) for details. Third-party dependency notices and complete
+license texts are available in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
+and [`THIRD_PARTY_LICENSES/`](THIRD_PARTY_LICENSES/).

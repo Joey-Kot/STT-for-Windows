@@ -57,6 +57,18 @@ jobs:
       - name: Test
         run: go test ./...
 
+      - name: Check third-party notices
+        run: |
+          test -s NOTICE
+          test -s THIRD_PARTY_NOTICES.txt
+          grep -qi 'FFmpeg' THIRD_PARTY_NOTICES.txt
+          grep -qi 'PortAudio' THIRD_PARTY_NOTICES.txt
+          test -s THIRD_PARTY_LICENSES/FFmpeg-GPL-3.0-or-later.txt
+          test -s THIRD_PARTY_LICENSES/PortAudio-MIT.txt
+          test -s THIRD_PARTY_LICENSES/Wails-MIT.txt
+          test -s THIRD_PARTY_LICENSES/LAME-LGPL-2.0-only.txt
+          test -s THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt
+
       - name: Install Wails
         run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
 
@@ -97,12 +109,13 @@ jobs:
           export CGO_CFLAGS="$(pkg-config --cflags portaudio-2.0)"
           export CGO_LDFLAGS="$(pkg-config --libs --static portaudio-2.0)"
           go build -trimpath -ldflags='-s -w -extldflags "-static"' -o dist/package/stt.exe .
-          cp README.md LICENSE dist/package/
+          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt dist/package/
+          cp -R THIRD_PARTY_LICENSES dist/package/
 
       - name: Package CLI
         run: |
           cd dist/package
-          python3 -m zipfile -c ../stt-cli-windows-amd64.zip stt.exe README.md LICENSE
+          python3 -m zipfile -c ../stt-cli-windows-amd64.zip stt.exe README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt THIRD_PARTY_LICENSES/*
           cd ../..
           sha256sum dist/stt-cli-windows-amd64.zip > dist/stt-cli-windows-amd64.zip.sha256
 
@@ -150,9 +163,10 @@ jobs:
         run: |
           mkdir -p dist/gui-package
           cp GUI/build/bin/STT.exe dist/gui-package/
-          cp README.md LICENSE THIRD_PARTY_NOTICES.txt dist/gui-package/
+          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt dist/gui-package/
+          cp -R THIRD_PARTY_LICENSES dist/gui-package/
           cd dist/gui-package
-          python3 -m zipfile -c ../stt-gui-windows-amd64.zip STT.exe README.md LICENSE THIRD_PARTY_NOTICES.txt
+          python3 -m zipfile -c ../stt-gui-windows-amd64.zip STT.exe README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt THIRD_PARTY_LICENSES/*
           cd ../..
           sha256sum dist/stt-gui-windows-amd64.zip > dist/stt-gui-windows-amd64.zip.sha256
 

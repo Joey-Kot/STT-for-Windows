@@ -1,34 +1,40 @@
-Third Party Notices
+# Third-Party Notices
 
-STT for Windows uses the following third-party components:
+The GUI release statically links the following components. Release packages
+include their complete license texts in `THIRD_PARTY_LICENSES/`.
 
-1. FFmpeg/libav
+## FFmpeg
 
-Used by the GUI version for audio decoding, resampling, encoding, and muxing.
+- Version: n7.1.1
+- Source: https://github.com/FFmpeg/FFmpeg
+- License: GPL-3.0-or-later for the distributed build (`--enable-gpl` and
+  `--enable-version3` are enabled).
+- Full license text: `THIRD_PARTY_LICENSES/FFmpeg-GPL-3.0-or-later.txt`
+- Build configuration: `scripts/build-ffmpeg-windows-amd64.sh`
 
-FFmpeg is a multimedia framework developed by the FFmpeg project.
-FFmpeg is licensed under the GNU Lesser General Public License (LGPL) version 2.1 or later,
-or the GNU General Public License (GPL) version 2 or later, depending on the build configuration.
+## PortAudio
 
-This project builds and statically links a trimmed FFmpeg/libav configuration for the GUI version,
-used only for audio processing required by STT workflows.
+- Version: v19.7.0
+- Source: https://github.com/PortAudio/portaudio
+- License: MIT
+- Full license text: `THIRD_PARTY_LICENSES/PortAudio-MIT.txt`
 
-No FFmpeg nonfree components are intentionally enabled.
+## Audio codec libraries
 
-FFmpeg project:
-https://ffmpeg.org/
+- LAME 3.100 — LGPL-2.0-only; `THIRD_PARTY_LICENSES/LAME-LGPL-2.0-only.txt`
+- Opus v1.5.2 — BSD-3-Clause; `THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt`
+- libogg 1.3.5 and libvorbis 1.3.7 — BSD-3-Clause;
+  `THIRD_PARTY_LICENSES/Xiph-BSD-3-Clause.txt`
+- opencore-amr 0.1.6 — Apache-2.0;
+  `THIRD_PARTY_LICENSES/opencore-amr-Apache-2.0.txt`
 
-FFmpeg legal information:
-https://ffmpeg.org/legal.html
+## Wails
 
-FFmpeg source code:
-https://ffmpeg.org/download.html
+- Version: 2.10.2
+- Source: https://github.com/wailsapp/wails
+- License: MIT
+- Full license text: `THIRD_PARTY_LICENSES/Wails-MIT.txt`
 
-2. PortAudio
+## Project License
 
-Used for cross-platform audio input/output support.
-
-PortAudio is licensed under the MIT License.
-
-PortAudio project:
-https://www.portaudio.com/
+- GPL-3.0-or-later
