@@ -1020,16 +1020,18 @@ el.floating.addEventListener("dblclick", async () => {
 });
 
 window.addEventListener("keydown", async (event) => {
-  if (event.key === "Escape" && !el.settingsView.classList.contains("hidden")) {
+  if (event.key !== "Escape" || event.repeat) {
+    return;
+  }
+  if (!el.settingsView.classList.contains("hidden")) {
     event.preventDefault();
     await closeSettings();
+    return;
   }
-  if (event.key === "Escape" && el.settingsView.classList.contains("hidden")) {
-    const result = await RequestQuit();
-    if (!result.quit) {
-      el.quitMessage.textContent = result.message;
-      el.quitDialog.showModal();
-    }
+  const result = await RequestQuit();
+  if (!result.quit) {
+    el.quitMessage.textContent = result.message;
+    el.quitDialog.showModal();
   }
 });
 
