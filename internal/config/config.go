@@ -17,6 +17,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"stt/internal/hotkey"
 )
 
 // Config holds configurable parameters.
@@ -131,6 +133,9 @@ func Validate(cfg *Config) error {
 	}
 	if cfg.BIT_RATE <= 0 {
 		return fmt.Errorf("invalid BIT_RATE: %d (must be > 0)", cfg.BIT_RATE)
+	}
+	if err := hotkey.ValidateBindings(cfg.StartKey, cfg.PauseKey, cfg.CancelKey); err != nil {
+		return err
 	}
 
 	allowedCodecs := map[string]bool{

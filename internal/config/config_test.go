@@ -77,6 +77,8 @@ func TestValidateRejectsInvalidValues(t *testing.T) {
 		{name: "sample rate", mutate: func(c *Config) { c.SAMPLING_RATE = 0 }, wantErr: "invalid SAMPLING_RATE"},
 		{name: "depth", mutate: func(c *Config) { c.SAMPLING_RATE_DEPTH = 12 }, wantErr: "invalid SAMPLING_RATE_DEPTH"},
 		{name: "bitrate", mutate: func(c *Config) { c.BIT_RATE = 0 }, wantErr: "invalid BIT_RATE"},
+		{name: "hotkey modifier", mutate: func(c *Config) { c.StartKey = "textctrrl+q" }, wantErr: "invalid START_KEY"},
+		{name: "duplicate hotkey", mutate: func(c *Config) { c.PauseKey = "ALT+CTRL+Q" }, wantErr: "duplicates START_KEY"},
 		{name: "codec", mutate: func(c *Config) { c.CODECS = "bad-codec" }, wantErr: "invalid CODECS"},
 		{name: "container", mutate: func(c *Config) { c.CONTAINER = "bad-container" }, wantErr: "invalid CONTAINER"},
 	}
