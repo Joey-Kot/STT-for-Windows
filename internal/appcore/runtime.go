@@ -183,7 +183,6 @@ func (r *Runtime) Reload(cfg config.Config) error {
 	r.mu.Unlock()
 
 	if err := r.StartHotkeys(); err != nil {
-		r.setState(StateError, "Failed to register hotkeys", err)
 		return err
 	}
 	r.setState(StateIdle, "Settings saved", nil)
@@ -209,6 +208,7 @@ func (r *Runtime) StartHotkeys() error {
 		}
 	}, cfg.HOTKEY_DEBUG)
 	if err != nil {
+		r.setState(StateError, "Hotkey registration failed", err)
 		return err
 	}
 

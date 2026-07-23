@@ -92,9 +92,9 @@ func (a *App) startup(ctx context.Context) {
 	})
 	a.runtime = rt
 
-	if err := rt.StartHotkeys(); err != nil {
-		a.emitError("Hotkey registration failed", err)
-	}
+	// StartHotkeys retains registration failures in the runtime state so the
+	// startup snapshot and later GetState calls continue to report the error.
+	_ = rt.StartHotkeys()
 	go startTray(a)
 	wailsruntime.EventsEmit(ctx, "runtime:state", rt.Snapshot())
 	wailsruntime.EventsEmit(ctx, "window:minimal", a.GetWindowState())
