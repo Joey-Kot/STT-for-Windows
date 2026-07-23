@@ -14,6 +14,7 @@
 package clipboard
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -22,20 +23,23 @@ import (
 
 // PasteText writes text to clipboard, sends Ctrl+V, and restores clipboard.
 func PasteText(text string) error {
-	orig, _ := clipboard.ReadAll()
-	_ = clipboard.WriteAll(text)
-	time.Sleep(80 * time.Millisecond)
+	return pasteText(text, pasteOperations{
+		readAll:   clipboard.ReadAll,
+		writeAll:  clipboard.WriteAll,
+		sendPaste: sendPasteShortcut,
+		sleep:     time.Sleep,
+	})
+}
 
+func sendPasteShortcut() error {
 	kb, err := keybd_event.NewKeyBonding()
 	if err != nil {
-		return err
+		return fmt.Errorf("create key binding: %w", err)
 	}
 	kb.HasCTRL(true)
 	kb.SetKeys(keybd_event.VK_V)
 	if err := kb.Launching(); err != nil {
-		return err
+		return fmt.Errorf("launch key binding: %w", err)
 	}
-	time.Sleep(120 * time.Millisecond)
-	_ = clipboard.WriteAll(orig)
 	return nil
 }

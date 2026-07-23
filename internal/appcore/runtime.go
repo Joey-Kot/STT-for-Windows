@@ -368,11 +368,16 @@ func (r *Runtime) transcribeResult(res record.Result) {
 	}
 
 	if err := clipboard.PasteText(text); err != nil {
+		message := "Paste failed"
+		var restoreErr *clipboard.RestoreError
+		if errors.As(err, &restoreErr) && restoreErr.PasteSent {
+			message = "Paste sent; clipboard restore failed"
+		}
 		if cfg.Notification {
-			notify.Notify("STT", "Paste failed")
+			notify.Notify("STT", message)
 		}
 		handleCache(cfg, res.WavPath, outPath, uploadOk, raw)
-		r.setState(StateError, "Paste failed", err)
+		r.setState(StateError, message, err)
 		return
 	}
 
