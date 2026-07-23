@@ -108,11 +108,12 @@ func registerHotkeys(startKey, pauseKey, cancelKey string, handler func(id int),
 				procUnregisterHotKey.Call(0, uintptr(d.id))
 			}
 		}()
+		const MOD_NOREPEAT = 0x4000
 		for _, d := range defs {
 			r, _, _ := procRegisterHotKey.Call(
 				0,
 				uintptr(d.id),
-				uintptr(d.mod),
+				uintptr(d.mod|MOD_NOREPEAT),
 				uintptr(d.vk),
 			)
 			if r == 0 {
@@ -296,6 +297,12 @@ func startLowLevelHook(startKey, pauseKey, cancelKey string, handler func(id int
 			}
 
 			if msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN {
+				if swallowed[vk] {
+					if debug {
+						fmt.Printf("[hotkey-debug] swallowed repeated keydown vk=0x%X\n", vk)
+					}
+					return uintptr(1)
+				}
 				if cands, ok := lookup[vk]; ok {
 					for _, c := range cands {
 						if modsSatisfied(c.mod) {
