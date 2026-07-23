@@ -68,6 +68,9 @@ type Runtime struct {
 	state       State
 	lastMessage string
 	lastError   string
+
+	nextRecordingSession   uint64
+	activeRecordingSession uint64
 }
 
 // NewRuntime creates a reusable record-mode runtime.
@@ -143,6 +146,8 @@ func (r *Runtime) Reload(cfg config.Config) error {
 	if err != nil {
 		return err
 	}
+	tempDir := config.TempDir(&cfg)
+	recorder := record.New(cfg, tempDir)
 
 	if r.stopHotkeys != nil {
 		r.stopHotkeys()
@@ -151,9 +156,10 @@ func (r *Runtime) Reload(cfg config.Config) error {
 
 	r.mu.Lock()
 	r.cfg = cfg
-	r.tempDir = config.TempDir(&cfg)
-	r.recorder = record.New(cfg, r.tempDir)
+	r.tempDir = tempDir
+	r.recorder = recorder
 	r.asrClient = asrClient
+	r.activeRecordingSession = 0
 	r.mu.Unlock()
 
 	if err := r.StartHotkeys(); err != nil {
@@ -285,10 +291,13 @@ func (r *Runtime) toggleRecordingLocked() {
 	state := r.state
 	recorder := r.recorder
 	cfg := r.cfg
+	session := r.activeRecordingSession
 	r.mu.Unlock()
 
 	if state == StateIdle || state == StateError {
+		session = r.beginRecordingSession(recorder)
 		if err := recorder.Start(context.Background()); err != nil {
+			r.clearRecordingSession(recorder, session)
 			r.setState(StateError, "Recording start failed", err)
 			return
 		}
@@ -305,9 +314,13 @@ func (r *Runtime) toggleRecordingLocked() {
 
 	res, err := recorder.Stop()
 	if err != nil {
+		if res.Err != nil {
+			r.clearRecordingSession(recorder, session)
+		}
 		r.setState(StateError, "Recording stop failed", err)
 		return
 	}
+	r.clearRecordingSession(recorder, session)
 	if res.Canceled {
 		r.setState(StateIdle, "Recording canceled", nil)
 		return
@@ -322,6 +335,56 @@ func (r *Runtime) toggleRecordingLocked() {
 	}
 	r.setState(StateUploading, "Uploading ASR request", nil)
 	r.transcribeResult(res)
+}
+
+func (r *Runtime) beginRecordingSession(recorder *record.Recorder) uint64 {
+	r.mu.Lock()
+	r.nextRecordingSession++
+	session := r.nextRecordingSession
+	r.activeRecordingSession = session
+	r.mu.Unlock()
+
+	recorder.SetErrorHandler(func(err error) {
+		r.handleRecorderError(recorder, session, err)
+	})
+	return session
+}
+
+func (r *Runtime) clearRecordingSession(recorder *record.Recorder, session uint64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.recorder == recorder && r.activeRecordingSession == session {
+		r.activeRecordingSession = 0
+	}
+}
+
+func (r *Runtime) handleRecorderError(recorder *record.Recorder, session uint64, err error) {
+	if err == nil {
+		return
+	}
+
+	// finish writes the buffered recorder result before invoking this callback,
+	// so waiting for actionMu cannot deadlock a concurrent Stop or Cancel. The
+	// lock also keeps the error event ordered after an in-flight start action.
+	r.actionMu.Lock()
+	defer r.actionMu.Unlock()
+
+	r.mu.Lock()
+	if r.recorder != recorder || r.activeRecordingSession != session {
+		r.mu.Unlock()
+		return
+	}
+	// A concurrent stop/cancel can report "recorder not running" after the
+	// recorder has already failed. Preserve the original background error by
+	// allowing it to replace that generic Error state.
+	if r.state != StateRecording && r.state != StatePaused && r.state != StateError {
+		r.mu.Unlock()
+		return
+	}
+	r.activeRecordingSession = 0
+	r.mu.Unlock()
+
+	r.setState(StateError, "Recording failed", err)
 }
 
 func (r *Runtime) togglePauseLocked() {
@@ -349,6 +412,7 @@ func (r *Runtime) cancelRecording() (record.Result, error) {
 	state := r.state
 	recorder := r.recorder
 	cfg := r.cfg
+	session := r.activeRecordingSession
 	r.mu.Unlock()
 
 	if state != StateRecording && state != StatePaused {
@@ -359,9 +423,13 @@ func (r *Runtime) cancelRecording() (record.Result, error) {
 	}
 	res, err := recorder.Cancel()
 	if err != nil {
+		if res.Err != nil {
+			r.clearRecordingSession(recorder, session)
+		}
 		r.setState(StateError, "Cancel failed", err)
 		return res, err
 	}
+	r.clearRecordingSession(recorder, session)
 	r.setState(StateIdle, "Recording canceled", nil)
 	return res, nil
 }

@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"stt/internal/config"
+	"stt/internal/record"
 )
 
 func TestRuntimeSnapshotAndEventHandler(t *testing.T) {
@@ -44,6 +45,126 @@ func TestRuntimeSnapshotAndEventHandler(t *testing.T) {
 	}
 	if !r.CanReload() {
 		t.Fatalf("CanReload = false for error state, want true")
+	}
+}
+
+func TestRecorderErrorUpdatesActiveRuntimeState(t *testing.T) {
+	for _, state := range []State{StateRecording, StatePaused, StateError} {
+		t.Run(string(state), func(t *testing.T) {
+			recorder := &record.Recorder{}
+			const session = 1
+			r := &Runtime{
+				state:                  state,
+				lastMessage:            "generic error",
+				lastError:              "recorder not running",
+				recorder:               recorder,
+				activeRecordingSession: session,
+			}
+			wantErr := errors.New("input device disconnected")
+
+			r.handleRecorderError(recorder, session, wantErr)
+
+			want := Event{State: StateError, Message: "Recording failed", Error: wantErr.Error()}
+			if got := r.Snapshot(); got != want {
+				t.Fatalf("Snapshot = %#v, want %#v", got, want)
+			}
+			if r.activeRecordingSession != 0 {
+				t.Fatalf("active recording session = %d, want cleared", r.activeRecordingSession)
+			}
+		})
+	}
+}
+
+func TestRecorderErrorDoesNotOverwriteInactiveRuntimeState(t *testing.T) {
+	for _, state := range []State{StateIdle, StateUploading} {
+		t.Run(string(state), func(t *testing.T) {
+			recorder := &record.Recorder{}
+			const session = 1
+			r := &Runtime{
+				state:                  state,
+				lastMessage:            "current state",
+				recorder:               recorder,
+				activeRecordingSession: session,
+			}
+
+			r.handleRecorderError(recorder, session, errors.New("stale recorder error"))
+
+			want := Event{State: state, Message: "current state"}
+			if got := r.Snapshot(); got != want {
+				t.Fatalf("Snapshot = %#v, want %#v", got, want)
+			}
+		})
+	}
+}
+
+func TestRecorderErrorDoesNotOverwriteAnotherRecordingSession(t *testing.T) {
+	currentRecorder := &record.Recorder{}
+	oldRecorder := &record.Recorder{}
+	const currentSession = 2
+
+	tests := []struct {
+		name     string
+		recorder *record.Recorder
+		session  uint64
+	}{
+		{name: "old recorder", recorder: oldRecorder, session: currentSession},
+		{name: "old session", recorder: currentRecorder, session: currentSession - 1},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			r := &Runtime{
+				state:                  StateRecording,
+				lastMessage:            "new recording active",
+				recorder:               currentRecorder,
+				activeRecordingSession: currentSession,
+			}
+
+			r.handleRecorderError(tt.recorder, tt.session, errors.New("old recording failed"))
+
+			want := Event{State: StateRecording, Message: "new recording active"}
+			if got := r.Snapshot(); got != want {
+				t.Fatalf("Snapshot = %#v, want %#v", got, want)
+			}
+			if r.activeRecordingSession != currentSession {
+				t.Fatalf("active recording session = %d, want %d", r.activeRecordingSession, currentSession)
+			}
+		})
+	}
+}
+
+func TestRecorderErrorWaitsForCurrentAction(t *testing.T) {
+	recorder := &record.Recorder{}
+	const session = 1
+	r := &Runtime{state: StateRecording, recorder: recorder, activeRecordingSession: session}
+	wantErr := errors.New("stream failed immediately after startup")
+	done := make(chan struct{})
+	r.actionMu.Lock()
+
+	go func() {
+		r.handleRecorderError(recorder, session, wantErr)
+		close(done)
+	}()
+
+	select {
+	case <-done:
+		t.Fatal("recorder error bypassed the in-flight runtime action")
+	case <-time.After(20 * time.Millisecond):
+	}
+	if got := r.Snapshot(); got.State != StateRecording {
+		t.Fatalf("Snapshot changed before the action completed: %#v", got)
+	}
+
+	r.actionMu.Unlock()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		t.Fatal("recorder error did not resume after the action completed")
+	}
+
+	want := Event{State: StateError, Message: "Recording failed", Error: wantErr.Error()}
+	if got := r.Snapshot(); got != want {
+		t.Fatalf("Snapshot = %#v, want %#v", got, want)
 	}
 }
 
