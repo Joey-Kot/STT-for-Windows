@@ -175,7 +175,7 @@ func (r *Runtime) StartHotkeys() error {
 	r.mu.Unlock()
 
 	reg, err := hotkey.RegisterWithStop(cfg.StartKey, cfg.PauseKey, cfg.CancelKey, cfg.HotKeyHook, func(id int) {
-		if !r.tryHandleHotkey(id) && cfg.HOTKEY_DEBUG {
+		if !r.tryHandleAction(id) && cfg.HOTKEY_DEBUG {
 			fmt.Printf("[hotkey-debug] dropped action id=%d while another action is in progress\n", id)
 		}
 	}, cfg.HOTKEY_DEBUG)
@@ -226,6 +226,24 @@ func (r *Runtime) Cancel() Event {
 	return r.Snapshot()
 }
 
+// TryToggleRecording asynchronously starts or stops recording when no other
+// runtime action is in progress.
+func (r *Runtime) TryToggleRecording() bool {
+	return r.tryHandleAction(1)
+}
+
+// TryTogglePause asynchronously pauses or resumes recording when no other
+// runtime action is in progress.
+func (r *Runtime) TryTogglePause() bool {
+	return r.tryHandleAction(2)
+}
+
+// TryCancel asynchronously cancels recording when no other runtime action is
+// in progress.
+func (r *Runtime) TryCancel() bool {
+	return r.tryHandleAction(3)
+}
+
 // HandleAction maps hotkey IDs to runtime operations.
 func (r *Runtime) HandleAction(id int) {
 	r.actionMu.Lock()
@@ -234,10 +252,12 @@ func (r *Runtime) HandleAction(id int) {
 	r.handleActionLocked(id)
 }
 
-// tryHandleHotkey admits a hotkey only when no runtime action is in progress.
-// Acquiring the lock before dispatch prevents hotkeys captured during a long
+// tryHandleAction admits an asynchronous action only when no runtime action is
+// in progress. It is used by both hotkey and GUI inputs so busy actions are
+// discarded at capture time instead of queued for a later runtime state.
+// Acquiring the lock before dispatch prevents inputs captured during a long
 // transcription from waiting and executing against a later runtime state.
-func (r *Runtime) tryHandleHotkey(id int) bool {
+func (r *Runtime) tryHandleAction(id int) bool {
 	if !r.actionMu.TryLock() {
 		return false
 	}

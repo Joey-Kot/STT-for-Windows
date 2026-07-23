@@ -47,23 +47,34 @@ func TestRuntimeSnapshotAndEventHandler(t *testing.T) {
 	}
 }
 
-func TestTryHandleHotkeyDropsActionWhileBusy(t *testing.T) {
-	r := &Runtime{}
-	r.actionMu.Lock()
-	defer r.actionMu.Unlock()
+func TestTryActionsDropWhileBusy(t *testing.T) {
+	tests := map[string]func(*Runtime) bool{
+		"hotkey action":    func(r *Runtime) bool { return r.tryHandleAction(0) },
+		"toggle recording": (*Runtime).TryToggleRecording,
+		"toggle pause":     (*Runtime).TryTogglePause,
+		"cancel":           (*Runtime).TryCancel,
+	}
 
-	result := make(chan bool, 1)
-	go func() {
-		result <- r.tryHandleHotkey(0)
-	}()
+	for name, action := range tests {
+		t.Run(name, func(t *testing.T) {
+			r := &Runtime{}
+			r.actionMu.Lock()
+			defer r.actionMu.Unlock()
 
-	select {
-	case accepted := <-result:
-		if accepted {
-			t.Fatal("tryHandleHotkey accepted an action while actionMu was locked")
-		}
-	case <-time.After(time.Second):
-		t.Fatal("tryHandleHotkey blocked instead of dropping the action")
+			result := make(chan bool, 1)
+			go func() {
+				result <- action(r)
+			}()
+
+			select {
+			case accepted := <-result:
+				if accepted {
+					t.Fatal("action was accepted while actionMu was locked")
+				}
+			case <-time.After(time.Second):
+				t.Fatal("action blocked instead of being dropped")
+			}
+		})
 	}
 }
 

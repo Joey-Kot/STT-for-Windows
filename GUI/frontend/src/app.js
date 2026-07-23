@@ -981,10 +981,14 @@ el.recordBtn.addEventListener("click", async () => {
     state.suppressRecordClick = false;
     return;
   }
-  setRuntime(await ToggleRecording());
+  await ToggleRecording();
 });
-el.pauseBtn.addEventListener("click", async () => setRuntime(await TogglePause()));
-el.cancelBtn.addEventListener("click", async () => setRuntime(await Cancel()));
+el.pauseBtn.addEventListener("click", async () => {
+  await TogglePause();
+});
+el.cancelBtn.addEventListener("click", async () => {
+  await Cancel();
+});
 el.settingsBtn.addEventListener("click", async () => {
   await openSettings();
 });

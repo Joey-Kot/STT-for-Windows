@@ -155,34 +155,31 @@ func (a *App) SetMinimal(minimal bool) WindowState {
 	return state
 }
 
-// ToggleRecording starts/stops recording.
-func (a *App) ToggleRecording() appcore.Event {
+// ToggleRecording requests a start/stop action without queueing behind a busy action.
+func (a *App) ToggleRecording() bool {
 	rt := a.getRuntime()
 	if rt == nil {
-		return appcore.Event{State: appcore.StateError, Message: "Runtime is not ready"}
+		return false
 	}
-	go rt.ToggleRecording()
-	return rt.Snapshot()
+	return rt.TryToggleRecording()
 }
 
-// TogglePause pauses/resumes recording.
-func (a *App) TogglePause() appcore.Event {
+// TogglePause requests a pause/resume action without queueing behind a busy action.
+func (a *App) TogglePause() bool {
 	rt := a.getRuntime()
 	if rt == nil {
-		return appcore.Event{State: appcore.StateError, Message: "Runtime is not ready"}
+		return false
 	}
-	go rt.TogglePause()
-	return rt.Snapshot()
+	return rt.TryTogglePause()
 }
 
-// Cancel cancels the current recording.
-func (a *App) Cancel() appcore.Event {
+// Cancel requests cancellation without queueing behind a busy action.
+func (a *App) Cancel() bool {
 	rt := a.getRuntime()
 	if rt == nil {
-		return appcore.Event{State: appcore.StateError, Message: "Runtime is not ready"}
+		return false
 	}
-	go rt.Cancel()
-	return rt.Snapshot()
+	return rt.TryCancel()
 }
 
 // LoadConfig reads the editable ASR config JSON.
