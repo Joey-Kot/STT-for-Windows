@@ -569,7 +569,7 @@ func (r *Runtime) transcribeResult(ctx context.Context, res record.Result) {
 		return
 	}
 
-	outPath := strings.TrimSuffix(res.WavPath, filepath.Ext(res.WavPath)) + "." + config.ContainerExt(cfg.CONTAINER)
+	outPath := recordingOutputPath(res.WavPath, cfg.CONTAINER)
 	if err := ffmpeg.ConvertContext(ctx, cfg, res.WavPath, outPath, cfg.SAMPLING_RATE); err != nil {
 		_ = os.Remove(res.WavPath)
 		_ = os.Remove(outPath)
@@ -798,10 +798,11 @@ func handleCache(cfg config.Config, wavPath string, outPath string, uploadOk boo
 	if cfg.KeepCache && cfg.CacheDir != "" {
 		timestamp := time.Now().Format("2006-01-02-15.04.05")
 		base := fmt.Sprintf("audio-%s", timestamp)
+		var newWav string
 
 		if wavPath != "" {
 			wavExt := filepath.Ext(wavPath)
-			newWav := filepath.Join(cfg.CacheDir, base+wavExt)
+			newWav = filepath.Join(cfg.CacheDir, base+wavExt)
 			if err := os.Rename(wavPath, newWav); err != nil {
 				fmt.Printf("[cache] failed to rename wav to %s: %v\n", newWav, err)
 				_ = os.Remove(wavPath)
@@ -811,6 +812,9 @@ func handleCache(cfg config.Config, wavPath string, outPath string, uploadOk boo
 		if outPath != "" {
 			outExt := filepath.Ext(outPath)
 			newOut := filepath.Join(cfg.CacheDir, base+outExt)
+			if newWav != "" && pathsEqual(newWav, newOut) {
+				newOut = filepath.Join(cfg.CacheDir, base+convertedFileSuffix+outExt)
+			}
 			if err := os.Rename(outPath, newOut); err != nil {
 				fmt.Printf("[cache] failed to rename output to %s: %v\n", newOut, err)
 				_ = os.Remove(outPath)
@@ -831,6 +835,22 @@ func handleCache(cfg config.Config, wavPath string, outPath string, uploadOk boo
 			_ = os.Remove(outPath)
 		}
 	}
+}
+
+const convertedFileSuffix = "_convert"
+
+func recordingOutputPath(wavPath string, container string) string {
+	ext := config.ContainerExt(container)
+	base := strings.TrimSuffix(wavPath, filepath.Ext(wavPath))
+	outPath := base + "." + ext
+	if pathsEqual(wavPath, outPath) {
+		return base + convertedFileSuffix + "." + ext
+	}
+	return outPath
+}
+
+func pathsEqual(first string, second string) bool {
+	return strings.EqualFold(filepath.Clean(first), filepath.Clean(second))
 }
 
 func tempOutputPath(dir, ext string) string {

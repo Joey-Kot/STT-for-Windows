@@ -355,6 +355,61 @@ func TestHandleCacheKeepsAudioAndResponseWhenEnabled(t *testing.T) {
 	}
 }
 
+func TestHandleCacheKeepsDistinctWAVFiles(t *testing.T) {
+	dir := t.TempDir()
+	wav := filepath.Join(dir, "input.wav")
+	out := filepath.Join(dir, "output_convert.wav")
+	if err := os.WriteFile(wav, []byte("original"), 0644); err != nil {
+		t.Fatalf("WriteFile wav failed: %v", err)
+	}
+	if err := os.WriteFile(out, []byte("converted"), 0644); err != nil {
+		t.Fatalf("WriteFile out failed: %v", err)
+	}
+
+	cfg := config.DefaultConfig()
+	cfg.CacheDir = dir
+	cfg.KeepCache = true
+	handleCache(cfg, wav, out, false, nil)
+
+	matches, err := filepath.Glob(filepath.Join(dir, "audio-*.wav"))
+	if err != nil {
+		t.Fatalf("Glob failed: %v", err)
+	}
+	if len(matches) != 2 {
+		t.Fatalf("cached WAV files = %#v, want original and converted files", matches)
+	}
+	contents := make(map[string]bool, len(matches))
+	for _, match := range matches {
+		data, err := os.ReadFile(match)
+		if err != nil {
+			t.Fatalf("ReadFile %s failed: %v", match, err)
+		}
+		contents[string(data)] = true
+	}
+	if !contents["original"] || !contents["converted"] {
+		t.Fatalf("cached WAV contents = %#v, want original and converted", contents)
+	}
+}
+
+func TestRecordingOutputPathAvoidsWAVInput(t *testing.T) {
+	wav := filepath.Join("temp", "RecordTemp_1234567890123456.wav")
+	want := filepath.Join("temp", "RecordTemp_1234567890123456_convert.wav")
+	if got := recordingOutputPath(wav, "WAV"); got != want {
+		t.Fatalf("recordingOutputPath = %q, want %q", got, want)
+	}
+	if pathsEqual(wav, recordingOutputPath(wav, "wav")) {
+		t.Fatal("WAV conversion output path still equals its input path")
+	}
+}
+
+func TestRecordingOutputPathKeepsOtherContainerName(t *testing.T) {
+	wav := filepath.Join("temp", "RecordTemp_1234567890123456.wav")
+	want := filepath.Join("temp", "RecordTemp_1234567890123456.ogg")
+	if got := recordingOutputPath(wav, "ogg"); got != want {
+		t.Fatalf("recordingOutputPath = %q, want %q", got, want)
+	}
+}
+
 func TestTempOutputPathUsesDirectoryAndExtension(t *testing.T) {
 	dir := t.TempDir()
 	path := tempOutputPath(dir, "ogg")
