@@ -12,6 +12,7 @@
 package clipboard
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"syscall"
@@ -31,6 +32,7 @@ type pasteOperations struct {
 	writeAll  func(string) error
 	sendPaste func() error
 	sleep     func(time.Duration)
+	wait      func(context.Context, time.Duration) error
 }
 
 // RestoreError reports that the temporary clipboard contents could not be
@@ -52,10 +54,24 @@ func (e *RestoreError) Unwrap() error {
 	return e.Err
 }
 
-func pasteText(text string, ops pasteOperations) (err error) {
+func pasteText(text string, ops pasteOperations) error {
+	return pasteTextContext(context.Background(), text, ops)
+}
+
+func pasteTextContext(ctx context.Context, text string, ops pasteOperations) (err error) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
 	original, readErr := ops.readAll()
 	if readErr = normalizeClipboardError(readErr); readErr != nil {
 		return fmt.Errorf("read original clipboard: %w", readErr)
+	}
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
 	pasteSent := false
@@ -81,14 +97,31 @@ func pasteText(text string, ops pasteOperations) (err error) {
 		return fmt.Errorf("write paste text to clipboard: %w", writeErr)
 	}
 
-	ops.sleep(clipboardWriteDelay)
+	if waitErr := waitForPaste(ctx, clipboardWriteDelay, ops); waitErr != nil {
+		return waitErr
+	}
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if sendErr := ops.sendPaste(); sendErr != nil {
 		return fmt.Errorf("send paste shortcut: %w", sendErr)
 	}
 	pasteSent = true
 
-	ops.sleep(clipboardRestoreDelay)
+	if waitErr := waitForPaste(ctx, clipboardRestoreDelay, ops); waitErr != nil {
+		return waitErr
+	}
 	return nil
+}
+
+func waitForPaste(ctx context.Context, delay time.Duration, ops pasteOperations) error {
+	if ops.wait != nil {
+		return ops.wait(ctx, delay)
+	}
+	if ops.sleep != nil {
+		ops.sleep(delay)
+	}
+	return ctx.Err()
 }
 
 func normalizeClipboardError(err error) error {

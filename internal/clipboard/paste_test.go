@@ -12,12 +12,120 @@
 package clipboard
 
 import (
+	"context"
 	"errors"
 	"reflect"
 	"syscall"
 	"testing"
 	"time"
 )
+
+func TestPasteTextContextStopsBeforeClipboardAccessWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	called := false
+	ops := pasteOperations{
+		readAll: func() (string, error) {
+			called = true
+			return "", nil
+		},
+	}
+
+	err := pasteTextContext(ctx, "transcription", ops)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if called {
+		t.Fatal("clipboard was accessed after cancellation")
+	}
+}
+
+func TestPasteTextContextStopsBeforeWritingWhenCanceledAfterRead(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	writeCalled := false
+	ops := pasteOperations{
+		readAll: func() (string, error) {
+			cancel()
+			return "original", nil
+		},
+		writeAll: func(string) error {
+			writeCalled = true
+			return nil
+		},
+	}
+
+	err := pasteTextContext(ctx, "transcription", ops)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if writeCalled {
+		t.Fatal("clipboard was written after cancellation")
+	}
+}
+
+func TestPasteTextContextCancelsBeforeSendingAndRestoresClipboard(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var writes []string
+	sendCalled := false
+	ops := pasteOperations{
+		readAll: func() (string, error) { return "original", nil },
+		writeAll: func(text string) error {
+			writes = append(writes, text)
+			return nil
+		},
+		sendPaste: func() error {
+			sendCalled = true
+			return nil
+		},
+		wait: func(context.Context, time.Duration) error {
+			cancel()
+			return ctx.Err()
+		},
+	}
+
+	err := pasteTextContext(ctx, "transcription", ops)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	if sendCalled {
+		t.Fatal("paste shortcut was sent after cancellation")
+	}
+	wantWrites := []string{"transcription", "original"}
+	if !reflect.DeepEqual(writes, wantWrites) {
+		t.Fatalf("writes = %#v, want %#v", writes, wantWrites)
+	}
+}
+
+func TestPasteTextContextRestoresWhenCanceledAfterSending(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	var writes []string
+	waits := 0
+	ops := pasteOperations{
+		readAll: func() (string, error) { return "original", nil },
+		writeAll: func(text string) error {
+			writes = append(writes, text)
+			return nil
+		},
+		sendPaste: func() error { return nil },
+		wait: func(context.Context, time.Duration) error {
+			waits++
+			if waits == 2 {
+				cancel()
+				return ctx.Err()
+			}
+			return nil
+		},
+	}
+
+	err := pasteTextContext(ctx, "transcription", ops)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("error = %v, want context.Canceled", err)
+	}
+	wantWrites := []string{"transcription", "original"}
+	if !reflect.DeepEqual(writes, wantWrites) {
+		t.Fatalf("writes = %#v, want %#v", writes, wantWrites)
+	}
+}
 
 func TestPasteTextWritesSendsAndRestoresInOrder(t *testing.T) {
 	var calls []string

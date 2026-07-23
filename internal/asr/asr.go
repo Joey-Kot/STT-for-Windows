@@ -61,6 +61,9 @@ func New(cfg config.Config, httpClient *http.Client) (*Client, error) {
 
 // Transcribe uploads the audio and returns extracted text and raw JSON.
 func (c *Client) Transcribe(ctx context.Context, filePath string) (string, []byte, error) {
+	if err := ctx.Err(); err != nil {
+		return "", nil, err
+	}
 	if c.cfg.APIEndpoint == "" {
 		return "", nil, fmt.Errorf("API endpoint is empty")
 	}
@@ -70,9 +73,15 @@ func (c *Client) Transcribe(ctx context.Context, filePath string) (string, []byt
 	var lastResp []byte
 
 	for {
+		if err := ctx.Err(); err != nil {
+			return "", lastResp, err
+		}
 		try++
 		ok, res := c.doUpload(ctx, filePath)
 		lastResp = res
+		if err := ctx.Err(); err != nil {
+			return "", lastResp, err
+		}
 		if ok {
 			text := jsonpath.ExtractTextFromResponse(res, c.cfg.TEXTPath)
 			return text, res, nil
@@ -88,7 +97,13 @@ func (c *Client) Transcribe(ctx context.Context, filePath string) (string, []byt
 				LastResponse: lastResp,
 			}
 		}
-		time.Sleep(time.Duration(delay * float64(time.Second)))
+		timer := time.NewTimer(time.Duration(delay * float64(time.Second)))
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", lastResp, ctx.Err()
+		case <-timer.C:
+		}
 		delay *= 2
 	}
 }

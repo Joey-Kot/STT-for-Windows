@@ -15,6 +15,7 @@ package ffmpeg
 
 import (
 	"bytes"
+	"context"
 	"fmt"
 	"os/exec"
 	"strings"
@@ -22,8 +23,7 @@ import (
 	"stt/internal/config"
 )
 
-// Convert converts input audio into the configured codec/container.
-func Convert(cfg config.Config, inPath, outPath string, rate int) error {
+func convert(ctx context.Context, cfg config.Config, inPath, outPath string, rate int) error {
 	settings, err := settingsFor(cfg, rate)
 	if err != nil {
 		return err
@@ -33,10 +33,13 @@ func Convert(cfg config.Config, inPath, outPath string, rate int) error {
 	if cfg.FFMPEG_DEBUG {
 		fmt.Printf("[ffmpeg] executing: ffmpeg %s\n", strings.Join(args, " "))
 	}
-	cmd := exec.Command("ffmpeg", args...)
+	cmd := exec.CommandContext(ctx, "ffmpeg", args...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
 		return fmt.Errorf("ffmpeg failed: %v\n%s", err, stderr.String())
 	}
 	return nil

@@ -183,6 +183,101 @@ func TestStartWaitsUntilRecordingResourcesAreReady(t *testing.T) {
 	}
 }
 
+func TestRequestCancelDoesNotWaitForBlockedRead(t *testing.T) {
+	stream := &fakeAudioStream{
+		readEntered: make(chan struct{}),
+		readRelease: make(chan struct{}),
+	}
+	recorder := newRecorder(testConfig(), t.TempDir(), &fakeAudioBackend{stream: stream})
+	if err := recorder.Start(context.Background()); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	select {
+	case <-stream.readEntered:
+	case <-time.After(time.Second):
+		t.Fatal("recording did not enter blocked read")
+	}
+
+	started := time.Now()
+	if !recorder.RequestCancel() {
+		t.Fatal("RequestCancel rejected an active recording")
+	}
+	if elapsed := time.Since(started); elapsed > 100*time.Millisecond {
+		t.Fatalf("RequestCancel blocked for %v", elapsed)
+	}
+
+	recorder.mu.Lock()
+	done := recorder.done
+	recorder.mu.Unlock()
+	close(stream.readRelease)
+	select {
+	case res := <-done:
+		if !res.Canceled {
+			t.Fatalf("result = %#v, want Canceled=true", res)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recording did not finish after blocked read was released")
+	}
+}
+
+func TestParentContextCancellationDiscardsRecording(t *testing.T) {
+	stream := &fakeAudioStream{
+		readEntered: make(chan struct{}),
+		readRelease: make(chan struct{}),
+	}
+	tempDir := t.TempDir()
+	recorder := newRecorder(testConfig(), tempDir, &fakeAudioBackend{stream: stream})
+	ctx, cancel := context.WithCancel(context.Background())
+	if err := recorder.Start(ctx); err != nil {
+		t.Fatalf("Start failed: %v", err)
+	}
+	select {
+	case <-stream.readEntered:
+	case <-time.After(time.Second):
+		t.Fatal("recording did not enter blocked read")
+	}
+
+	recorder.mu.Lock()
+	done := recorder.done
+	recorder.mu.Unlock()
+	cancel()
+	close(stream.readRelease)
+
+	select {
+	case res := <-done:
+		if !res.Canceled {
+			t.Fatalf("result = %#v, want Canceled=true", res)
+		}
+		if res.WavPath != "" {
+			t.Fatalf("WavPath = %q, want empty path for discarded recording", res.WavPath)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("recording did not finish after parent context cancellation")
+	}
+
+	entries, err := os.ReadDir(tempDir)
+	if err != nil {
+		t.Fatalf("ReadDir failed: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Fatalf("temporary recording files remain after cancellation: %#v", entries)
+	}
+}
+
+func TestStartRejectsCanceledContext(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	recorder := newRecorder(testConfig(), t.TempDir(), &fakeAudioBackend{stream: &fakeAudioStream{}})
+
+	err := recorder.Start(ctx)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Start error = %v, want context.Canceled", err)
+	}
+	if state := recorder.State(); state != StateIdle {
+		t.Fatalf("recorder state = %v, want %v", state, StateIdle)
+	}
+}
+
 func TestStartReturnsInitializationErrorsWithoutAsyncNotification(t *testing.T) {
 	initErr := errors.New("initialize unavailable")
 	openErr := errors.New("no input device")

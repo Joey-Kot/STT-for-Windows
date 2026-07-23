@@ -119,6 +119,10 @@ func (r *Recorder) Start(ctx context.Context) error {
 		r.mu.Unlock()
 		return fmt.Errorf("recorder not idle")
 	}
+	if err := ctx.Err(); err != nil {
+		r.mu.Unlock()
+		return err
+	}
 	r.state = StateRecording
 	r.ready = false
 	r.activeErrorHandler = r.onError
@@ -169,6 +173,25 @@ func (r *Recorder) Cancel() (Result, error) {
 	}
 	res := <-done
 	return res, res.Err
+}
+
+// RequestCancel requests cancellation without waiting for recorder cleanup.
+// It is used during process shutdown, where the caller must not block on an
+// audio driver or an in-progress recording loop.
+func (r *Recorder) RequestCancel() bool {
+	r.mu.Lock()
+	if r.state != StateRecording && r.state != StatePaused {
+		r.mu.Unlock()
+		return false
+	}
+	r.state = StateCanceled
+	cancel := r.stopCancel
+	r.mu.Unlock()
+
+	if cancel != nil {
+		cancel()
+	}
+	return true
 }
 
 // TogglePause toggles pause/resume.
@@ -242,14 +265,14 @@ func (r *Recorder) recordLoop(stopCtx context.Context, done chan<- Result, start
 		if r.isCanceled() {
 			break
 		}
-		if r.isPaused() {
-			time.Sleep(100 * time.Millisecond)
-			continue
-		}
 		select {
 		case <-stopCtx.Done():
 			goto done
 		default:
+		}
+		if r.isPaused() {
+			time.Sleep(100 * time.Millisecond)
+			continue
 		}
 
 		if err := stream.Read(); err != nil {
@@ -291,10 +314,11 @@ func (r *Recorder) recordLoop(stopCtx context.Context, done chan<- Result, start
 	}
 
 done:
+	discard := r.markContextCancellation(stopCtx)
 	_ = stream.Stop()
 	_ = stream.Close()
 
-	if r.isCanceled() {
+	if discard {
 		_ = enc.Close()
 		_ = file.Close()
 		_ = os.Remove(wavPath)
@@ -354,6 +378,24 @@ func (r *Recorder) isCanceled() bool {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	return r.state == StateCanceled
+}
+
+// markContextCancellation distinguishes lifecycle cancellation from a normal
+// Stop. Stop changes the state to StateStopping before canceling stopCtx;
+// cancellation inherited directly from Start's parent context leaves the
+// recorder active and therefore means the partial recording must be discarded.
+func (r *Recorder) markContextCancellation(stopCtx context.Context) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+
+	if r.state == StateCanceled {
+		return true
+	}
+	if stopCtx.Err() != nil && (r.state == StateRecording || r.state == StatePaused) {
+		r.state = StateCanceled
+		return true
+	}
+	return false
 }
 
 func (r *Recorder) generateTempWav() string {

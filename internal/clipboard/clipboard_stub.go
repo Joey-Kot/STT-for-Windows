@@ -13,9 +13,20 @@
 
 package clipboard
 
-import "fmt"
+import (
+	"context"
+	"fmt"
+)
 
 // PasteText is not supported on non-Windows builds.
 func PasteText(text string) error {
+	return PasteTextContext(context.Background(), text)
+}
+
+// PasteTextContext is not supported on non-Windows builds.
+func PasteTextContext(ctx context.Context, text string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	return fmt.Errorf("clipboard paste not supported on this platform")
 }

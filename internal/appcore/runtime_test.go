@@ -13,6 +13,7 @@
 package appcore
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"os"
@@ -45,6 +46,63 @@ func TestRuntimeSnapshotAndEventHandler(t *testing.T) {
 	}
 	if !r.CanReload() {
 		t.Fatalf("CanReload = false for error state, want true")
+	}
+}
+
+func TestStopCancelsBeforeWaitingForCurrentAction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Runtime{
+		state:           StateUploading,
+		lastMessage:     "uploading",
+		recorder:        &record.Recorder{},
+		lifecycleCtx:    ctx,
+		lifecycleCancel: cancel,
+	}
+	r.actionMu.Lock()
+	stopped := make(chan struct{})
+	go func() {
+		r.Stop()
+		close(stopped)
+	}()
+
+	select {
+	case <-ctx.Done():
+	case <-time.After(100 * time.Millisecond):
+		t.Fatal("Stop waited for actionMu before canceling the lifecycle context")
+	}
+	if r.TryToggleRecording() {
+		t.Fatal("runtime accepted a new action after Stop")
+	}
+	r.actionMu.Unlock()
+
+	select {
+	case <-stopped:
+	case <-time.After(time.Second):
+		t.Fatal("Stop did not return after the current action completed")
+	}
+
+	r.setState(StateError, "late error", errors.New("late"))
+	want := Event{State: StateUploading, Message: "uploading"}
+	if got := r.Snapshot(); got != want {
+		t.Fatalf("Snapshot after Stop = %#v, want %#v", got, want)
+	}
+}
+
+func TestStopHasBoundedWaitForBlockedAction(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &Runtime{
+		recorder:        &record.Recorder{},
+		lifecycleCtx:    ctx,
+		lifecycleCancel: cancel,
+	}
+	r.actionMu.Lock()
+	started := time.Now()
+	r.Stop()
+	elapsed := time.Since(started)
+	r.actionMu.Unlock()
+
+	if elapsed > shutdownGracePeriod+500*time.Millisecond {
+		t.Fatalf("Stop took %v, want bounded wait near %v", elapsed, shutdownGracePeriod)
 	}
 }
 

@@ -558,15 +558,17 @@ cleanup:
 import "C"
 
 import (
+	"context"
 	"fmt"
 	"unsafe"
 
 	"stt/internal/config"
 )
 
-// Convert converts input audio into the configured codec/container using the
-// statically linked libav* libraries in GUI builds.
-func Convert(cfg config.Config, inPath, outPath string, rate int) error {
+// convert uses the statically linked libav* libraries in GUI builds. The C
+// conversion itself is synchronous, so cancellation is observed before and
+// after the call; GUI shutdown does not wait indefinitely for it to return.
+func convert(ctx context.Context, cfg config.Config, inPath, outPath string, rate int) error {
 	settings, err := settingsFor(cfg, rate)
 	if err != nil {
 		return err
@@ -606,6 +608,9 @@ func Convert(cfg config.Config, inPath, outPath string, rate int) error {
 		&errbuf[0],
 		C.int(len(errbuf)),
 	)
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	if ret < 0 {
 		msg := C.GoString(&errbuf[0])
 		if msg == "" {

@@ -14,6 +14,7 @@
 package clipboard
 
 import (
+	"context"
 	"fmt"
 	"time"
 
@@ -25,12 +26,29 @@ import (
 // The system clipboard is intentionally used as the text transport; Windows
 // history and third-party clipboard observers may see the temporary contents.
 func PasteText(text string) error {
-	return pasteText(text, pasteOperations{
+	return PasteTextContext(context.Background(), text)
+}
+
+// PasteTextContext performs the clipboard transaction while observing
+// cancellation before the paste shortcut and during both fixed waits.
+func PasteTextContext(ctx context.Context, text string) error {
+	return pasteTextContext(ctx, text, pasteOperations{
 		readAll:   clipboard.ReadAll,
 		writeAll:  clipboard.WriteAll,
 		sendPaste: sendPasteShortcut,
-		sleep:     time.Sleep,
+		wait:      waitContext,
 	})
+}
+
+func waitContext(ctx context.Context, delay time.Duration) error {
+	timer := time.NewTimer(delay)
+	defer timer.Stop()
+	select {
+	case <-ctx.Done():
+		return ctx.Err()
+	case <-timer.C:
+		return nil
+	}
 }
 
 // keybd_event is intentionally kept for the Ctrl+V chord while the clipboard

@@ -13,11 +13,23 @@
 package ffmpeg
 
 import (
+	"context"
+	"errors"
 	"reflect"
 	"testing"
 
 	"stt/internal/config"
 )
+
+func TestConvertContextReturnsBeforeStartingWhenCanceled(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := ConvertContext(ctx, config.Config{CODECS: "mp3"}, "missing-input.wav", "output.mp3", 16000)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ConvertContext error = %v, want context.Canceled", err)
+	}
+}
 
 func TestSettingsForAppliesDefaultsAndMapsCodec(t *testing.T) {
 	cfg := config.Config{CODECS: "MP3"}

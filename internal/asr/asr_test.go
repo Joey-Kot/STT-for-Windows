@@ -62,6 +62,51 @@ func TestTranscribeRetryExhaustedError(t *testing.T) {
 	}
 }
 
+func TestTranscribeCancellationInterruptsRetryDelay(t *testing.T) {
+	requestReceived := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		requestReceived <- struct{}{}
+		w.WriteHeader(http.StatusInternalServerError)
+		_, _ = w.Write([]byte("retry later"))
+	}))
+	defer server.Close()
+
+	cfg := config.DefaultConfig()
+	cfg.APIEndpoint = server.URL
+	cfg.TEXTPath = "text"
+	cfg.MaxRetry = 3
+	cfg.RetryBaseDelay = 30
+	cfg.RequestTimeout = 2
+
+	client, err := New(cfg, &http.Client{Timeout: time.Second})
+	if err != nil {
+		t.Fatalf("New failed: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	result := make(chan error, 1)
+	audioPath := tempAudioFile(t, "audio")
+	go func() {
+		_, _, err := client.Transcribe(ctx, audioPath)
+		result <- err
+	}()
+
+	select {
+	case <-requestReceived:
+	case <-time.After(time.Second):
+		t.Fatal("first upload attempt was not received")
+	}
+	cancel()
+
+	select {
+	case err := <-result:
+		if !errors.Is(err, context.Canceled) {
+			t.Fatalf("Transcribe error = %v, want context.Canceled", err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("Transcribe did not stop after cancellation")
+	}
+}
+
 func TestExtraConfigNullDeletesBaseField(t *testing.T) {
 	requestChecked := false
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

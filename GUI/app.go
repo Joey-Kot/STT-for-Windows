@@ -305,10 +305,17 @@ func (a *App) showWindow() {
 }
 
 func (a *App) quit() {
-	if a.ctx == nil {
+	a.mu.Lock()
+	rt := a.runtime
+	ctx := a.ctx
+	a.mu.Unlock()
+	if rt != nil {
+		rt.Stop()
+	}
+	if ctx == nil {
 		return
 	}
-	wailsruntime.Quit(a.ctx)
+	wailsruntime.Quit(ctx)
 }
 
 func defaultConfigPath() (string, error) {

@@ -46,6 +46,11 @@ const (
 	StateError     State = "Error"
 )
 
+const (
+	shutdownGracePeriod  = 250 * time.Millisecond
+	shutdownPollInterval = 5 * time.Millisecond
+)
+
 // Event describes a runtime state update.
 type Event struct {
 	State   State  `json:"state"`
@@ -57,17 +62,20 @@ type Event struct {
 // The application is designed for one process; actionMu intentionally provides
 // only in-process serialization rather than cross-process coordination.
 type Runtime struct {
-	mu          sync.Mutex
-	actionMu    sync.Mutex
-	cfg         config.Config
-	tempDir     string
-	recorder    *record.Recorder
-	asrClient   *asr.Client
-	stopHotkeys func()
-	onEvent     func(Event)
-	state       State
-	lastMessage string
-	lastError   string
+	mu              sync.Mutex
+	actionMu        sync.Mutex
+	cfg             config.Config
+	tempDir         string
+	recorder        *record.Recorder
+	asrClient       *asr.Client
+	stopHotkeys     func()
+	onEvent         func(Event)
+	state           State
+	lastMessage     string
+	lastError       string
+	lifecycleCtx    context.Context
+	lifecycleCancel context.CancelFunc
+	stopOnce        sync.Once
 
 	nextRecordingSession   uint64
 	activeRecordingSession uint64
@@ -86,13 +94,16 @@ func NewRuntime(cfg config.Config) (*Runtime, error) {
 	if err != nil {
 		return nil, err
 	}
+	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 
 	r := &Runtime{
-		cfg:       cfg,
-		tempDir:   tempDir,
-		recorder:  record.New(cfg, tempDir),
-		asrClient: asrClient,
-		state:     StateIdle,
+		cfg:             cfg,
+		tempDir:         tempDir,
+		recorder:        record.New(cfg, tempDir),
+		asrClient:       asrClient,
+		state:           StateIdle,
+		lifecycleCtx:    lifecycleCtx,
+		lifecycleCancel: lifecycleCancel,
 	}
 	return r, nil
 }
@@ -129,6 +140,9 @@ func (r *Runtime) CanReload() bool {
 func (r *Runtime) Reload(cfg config.Config) error {
 	r.actionMu.Lock()
 	defer r.actionMu.Unlock()
+	if r.isStopped() {
+		return fmt.Errorf("runtime stopped")
+	}
 
 	if err := config.Validate(&cfg); err != nil {
 		return err
@@ -149,9 +163,15 @@ func (r *Runtime) Reload(cfg config.Config) error {
 	tempDir := config.TempDir(&cfg)
 	recorder := record.New(cfg, tempDir)
 
-	if r.stopHotkeys != nil {
-		r.stopHotkeys()
-		r.stopHotkeys = nil
+	r.mu.Lock()
+	stopHotkeys := r.stopHotkeys
+	r.stopHotkeys = nil
+	r.mu.Unlock()
+	if stopHotkeys != nil {
+		stopHotkeys()
+	}
+	if r.isStopped() {
+		return fmt.Errorf("runtime stopped")
 	}
 
 	r.mu.Lock()
@@ -172,6 +192,9 @@ func (r *Runtime) Reload(cfg config.Config) error {
 
 // StartHotkeys registers global hotkeys and wires them to runtime actions.
 func (r *Runtime) StartHotkeys() error {
+	if r.isStopped() {
+		return fmt.Errorf("runtime stopped")
+	}
 	r.mu.Lock()
 	if r.stopHotkeys != nil {
 		r.mu.Unlock()
@@ -190,28 +213,38 @@ func (r *Runtime) StartHotkeys() error {
 	}
 
 	r.mu.Lock()
+	if r.lifecycleCtx != nil && r.lifecycleCtx.Err() != nil {
+		r.mu.Unlock()
+		reg.Stop()
+		return fmt.Errorf("runtime stopped")
+	}
 	r.stopHotkeys = reg.Stop
 	r.mu.Unlock()
 	return nil
 }
 
-// Stop releases hotkeys and recording resources.
+// Stop cancels runtime work and releases resources without waiting
+// indefinitely for an in-flight conversion, request, or paste operation.
 func (r *Runtime) Stop() {
-	r.actionMu.Lock()
-	defer r.actionMu.Unlock()
+	r.stopOnce.Do(func() {
+		if r.lifecycleCancel != nil {
+			r.lifecycleCancel()
+		}
 
-	r.mu.Lock()
-	stopHotkeys := r.stopHotkeys
-	r.stopHotkeys = nil
-	state := r.state
-	r.mu.Unlock()
+		r.mu.Lock()
+		stopHotkeys := r.stopHotkeys
+		r.stopHotkeys = nil
+		recorder := r.recorder
+		r.mu.Unlock()
 
-	if stopHotkeys != nil {
-		stopHotkeys()
-	}
-	if state == StateRecording || state == StatePaused {
-		_, _ = r.cancelRecording()
-	}
+		if recorder != nil {
+			recorder.RequestCancel()
+		}
+		if stopHotkeys != nil {
+			stopHotkeys()
+		}
+		r.waitForCurrentAction()
+	})
 }
 
 // ToggleRecording starts recording when idle, otherwise stops and uploads.
@@ -252,8 +285,14 @@ func (r *Runtime) TryCancel() bool {
 
 // HandleAction maps hotkey IDs to runtime operations.
 func (r *Runtime) HandleAction(id int) {
+	if r.isStopped() {
+		return
+	}
 	r.actionMu.Lock()
 	defer r.actionMu.Unlock()
+	if r.isStopped() {
+		return
+	}
 
 	r.handleActionLocked(id)
 }
@@ -264,7 +303,14 @@ func (r *Runtime) HandleAction(id int) {
 // Acquiring the lock before dispatch prevents inputs captured during a long
 // transcription from waiting and executing against a later runtime state.
 func (r *Runtime) tryHandleAction(id int) bool {
+	if r.isStopped() {
+		return false
+	}
 	if !r.actionMu.TryLock() {
+		return false
+	}
+	if r.isStopped() {
+		r.actionMu.Unlock()
 		return false
 	}
 
@@ -273,6 +319,45 @@ func (r *Runtime) tryHandleAction(id int) bool {
 		r.handleActionLocked(id)
 	}()
 	return true
+}
+
+func (r *Runtime) lifecycleContext() context.Context {
+	if r.lifecycleCtx != nil {
+		return r.lifecycleCtx
+	}
+	return context.Background()
+}
+
+func (r *Runtime) isStopped() bool {
+	ctx := r.lifecycleCtx
+	if ctx == nil {
+		return false
+	}
+	return ctx.Err() != nil
+}
+
+func (r *Runtime) waitForCurrentAction() {
+	if r.actionMu.TryLock() {
+		r.actionMu.Unlock()
+		return
+	}
+
+	timer := time.NewTimer(shutdownGracePeriod)
+	ticker := time.NewTicker(shutdownPollInterval)
+	defer timer.Stop()
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ticker.C:
+			if r.actionMu.TryLock() {
+				r.actionMu.Unlock()
+				return
+			}
+		case <-timer.C:
+			return
+		}
+	}
 }
 
 func (r *Runtime) handleActionLocked(id int) {
@@ -287,6 +372,11 @@ func (r *Runtime) handleActionLocked(id int) {
 }
 
 func (r *Runtime) toggleRecordingLocked() {
+	ctx := r.lifecycleContext()
+	if ctx.Err() != nil {
+		return
+	}
+
 	r.mu.Lock()
 	state := r.state
 	recorder := r.recorder
@@ -296,9 +386,17 @@ func (r *Runtime) toggleRecordingLocked() {
 
 	if state == StateIdle || state == StateError {
 		session = r.beginRecordingSession(recorder)
-		if err := recorder.Start(context.Background()); err != nil {
+		if err := recorder.Start(ctx); err != nil {
 			r.clearRecordingSession(recorder, session)
+			if ctx.Err() != nil {
+				return
+			}
 			r.setState(StateError, "Recording start failed", err)
+			return
+		}
+		if ctx.Err() != nil {
+			recorder.RequestCancel()
+			r.clearRecordingSession(recorder, session)
 			return
 		}
 		if cfg.Notification {
@@ -313,6 +411,11 @@ func (r *Runtime) toggleRecordingLocked() {
 	}
 
 	res, err := recorder.Stop()
+	if ctx.Err() != nil {
+		r.clearRecordingSession(recorder, session)
+		discardRecordingResult(res)
+		return
+	}
 	if err != nil {
 		if res.Err != nil {
 			r.clearRecordingSession(recorder, session)
@@ -334,7 +437,7 @@ func (r *Runtime) toggleRecordingLocked() {
 		notify.Notify("STT", "Recording finished")
 	}
 	r.setState(StateUploading, "Uploading ASR request", nil)
-	r.transcribeResult(res)
+	r.transcribeResult(ctx, res)
 }
 
 func (r *Runtime) beginRecordingSession(recorder *record.Recorder) uint64 {
@@ -359,7 +462,7 @@ func (r *Runtime) clearRecordingSession(recorder *record.Recorder, session uint6
 }
 
 func (r *Runtime) handleRecorderError(recorder *record.Recorder, session uint64, err error) {
-	if err == nil {
+	if err == nil || r.isStopped() {
 		return
 	}
 
@@ -368,6 +471,9 @@ func (r *Runtime) handleRecorderError(recorder *record.Recorder, session uint64,
 	// lock also keeps the error event ordered after an in-flight start action.
 	r.actionMu.Lock()
 	defer r.actionMu.Unlock()
+	if r.isStopped() {
+		return
+	}
 
 	r.mu.Lock()
 	if r.recorder != recorder || r.activeRecordingSession != session {
@@ -388,6 +494,9 @@ func (r *Runtime) handleRecorderError(recorder *record.Recorder, session uint64,
 }
 
 func (r *Runtime) togglePauseLocked() {
+	if r.isStopped() {
+		return
+	}
 	r.mu.Lock()
 	recorder := r.recorder
 	cfg := r.cfg
@@ -408,6 +517,11 @@ func (r *Runtime) togglePauseLocked() {
 }
 
 func (r *Runtime) cancelRecording() (record.Result, error) {
+	ctx := r.lifecycleContext()
+	if ctx.Err() != nil {
+		return record.Result{}, ctx.Err()
+	}
+
 	r.mu.Lock()
 	state := r.state
 	recorder := r.recorder
@@ -422,6 +536,11 @@ func (r *Runtime) cancelRecording() (record.Result, error) {
 		return record.Result{}, nil
 	}
 	res, err := recorder.Cancel()
+	if ctx.Err() != nil {
+		r.clearRecordingSession(recorder, session)
+		discardRecordingResult(res)
+		return res, ctx.Err()
+	}
 	if err != nil {
 		if res.Err != nil {
 			r.clearRecordingSession(recorder, session)
@@ -434,22 +553,43 @@ func (r *Runtime) cancelRecording() (record.Result, error) {
 	return res, nil
 }
 
-func (r *Runtime) transcribeResult(res record.Result) {
+func discardRecordingResult(res record.Result) {
+	if res.WavPath != "" {
+		_ = os.Remove(res.WavPath)
+	}
+}
+
+func (r *Runtime) transcribeResult(ctx context.Context, res record.Result) {
 	r.mu.Lock()
 	cfg := r.cfg
 	asrClient := r.asrClient
 	r.mu.Unlock()
-
-	outPath := strings.TrimSuffix(res.WavPath, filepath.Ext(res.WavPath)) + "." + config.ContainerExt(cfg.CONTAINER)
-	if err := ffmpeg.Convert(cfg, res.WavPath, outPath, cfg.SAMPLING_RATE); err != nil {
-		_ = os.Remove(res.WavPath)
-		_ = os.Remove(outPath)
-		r.setState(StateError, "FFmpeg conversion failed", err)
+	if ctx.Err() != nil {
+		discardRecordingResult(res)
 		return
 	}
 
-	text, raw, err := asrClient.Transcribe(context.Background(), outPath)
+	outPath := strings.TrimSuffix(res.WavPath, filepath.Ext(res.WavPath)) + "." + config.ContainerExt(cfg.CONTAINER)
+	if err := ffmpeg.ConvertContext(ctx, cfg, res.WavPath, outPath, cfg.SAMPLING_RATE); err != nil {
+		_ = os.Remove(res.WavPath)
+		_ = os.Remove(outPath)
+		if ctx.Err() != nil {
+			return
+		}
+		r.setState(StateError, "FFmpeg conversion failed", err)
+		return
+	}
+	if ctx.Err() != nil {
+		handleCache(cfg, res.WavPath, outPath, false, nil)
+		return
+	}
+
+	text, raw, err := asrClient.Transcribe(ctx, outPath)
 	uploadOk := err == nil
+	if ctx.Err() != nil {
+		handleCache(cfg, res.WavPath, outPath, uploadOk, raw)
+		return
+	}
 	if err != nil {
 		if cfg.Notification {
 			notify.Notify("STT", "Upload failed")
@@ -457,18 +597,30 @@ func (r *Runtime) transcribeResult(res record.Result) {
 		if cfg.RequestFailedNotification {
 			var re *asr.RetryExhaustedError
 			if errors.As(err, &re) {
-				if pasteErr := clipboard.PasteText("[request failed]"); pasteErr != nil {
+				if pasteErr := clipboard.PasteTextContext(ctx, "[request failed]"); pasteErr != nil {
+					if ctx.Err() != nil {
+						handleCache(cfg, res.WavPath, outPath, uploadOk, raw)
+						return
+					}
 					fmt.Printf("[paste] failed: %v\n", pasteErr)
 				} else if cfg.Notification {
 					notify.Notify("STT", "Request failed")
 				}
 			}
 		}
+		if ctx.Err() != nil {
+			handleCache(cfg, res.WavPath, outPath, uploadOk, raw)
+			return
+		}
 		handleCache(cfg, res.WavPath, outPath, uploadOk, raw)
 		r.setState(StateError, "Upload failed", err)
 		return
 	}
 
+	if ctx.Err() != nil {
+		handleCache(cfg, res.WavPath, outPath, uploadOk, raw)
+		return
+	}
 	if text == "" {
 		if cfg.Notification {
 			notify.Notify("STT", "Empty result from ASR")
@@ -478,7 +630,11 @@ func (r *Runtime) transcribeResult(res record.Result) {
 		return
 	}
 
-	if err := clipboard.PasteText(text); err != nil {
+	if err := clipboard.PasteTextContext(ctx, text); err != nil {
+		if ctx.Err() != nil {
+			handleCache(cfg, res.WavPath, outPath, uploadOk, raw)
+			return
+		}
 		message := "Paste failed"
 		var restoreErr *clipboard.RestoreError
 		if errors.As(err, &restoreErr) && restoreErr.PasteSent {
@@ -489,6 +645,10 @@ func (r *Runtime) transcribeResult(res record.Result) {
 		}
 		handleCache(cfg, res.WavPath, outPath, uploadOk, raw)
 		r.setState(StateError, message, err)
+		return
+	}
+	if ctx.Err() != nil {
+		handleCache(cfg, res.WavPath, outPath, uploadOk, raw)
 		return
 	}
 
@@ -505,6 +665,10 @@ func (r *Runtime) transcribeResult(res record.Result) {
 func (r *Runtime) setState(state State, message string, err error) {
 	var event Event
 	r.mu.Lock()
+	if r.lifecycleCtx != nil && r.lifecycleCtx.Err() != nil {
+		r.mu.Unlock()
+		return
+	}
 	r.state = state
 	r.lastMessage = message
 	r.lastError = ""
@@ -515,7 +679,7 @@ func (r *Runtime) setState(state State, message string, err error) {
 	handler := r.onEvent
 	r.mu.Unlock()
 
-	if handler != nil {
+	if handler != nil && !r.isStopped() {
 		handler(event)
 	}
 }

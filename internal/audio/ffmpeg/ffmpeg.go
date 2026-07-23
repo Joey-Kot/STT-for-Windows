@@ -12,12 +12,27 @@
 package ffmpeg
 
 import (
+	"context"
 	"fmt"
 	"strconv"
 	"strings"
 
 	"stt/internal/config"
 )
+
+// Convert converts input audio with a background context.
+func Convert(cfg config.Config, inPath, outPath string, rate int) error {
+	return ConvertContext(context.Background(), cfg, inPath, outPath, rate)
+}
+
+// ConvertContext converts input audio and observes cancellation where the
+// selected backend supports interruption.
+func ConvertContext(ctx context.Context, cfg config.Config, inPath, outPath string, rate int) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return convert(ctx, cfg, inPath, outPath, rate)
+}
 
 type conversionSettings struct {
 	CodecKey        string
