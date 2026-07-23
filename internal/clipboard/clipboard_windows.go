@@ -22,6 +22,8 @@ import (
 )
 
 // PasteText writes text to clipboard, sends Ctrl+V, and restores clipboard.
+// The system clipboard is intentionally used as the text transport; Windows
+// history and third-party clipboard observers may see the temporary contents.
 func PasteText(text string) error {
 	return pasteText(text, pasteOperations{
 		readAll:   clipboard.ReadAll,
@@ -31,6 +33,10 @@ func PasteText(text string) error {
 	})
 }
 
+// keybd_event is intentionally kept for the Ctrl+V chord while the clipboard
+// carries the text, instead of injecting text character by character with
+// SendInput. No target window is bound or verified: the current foreground
+// window decides whether to accept the paste command.
 func sendPasteShortcut() error {
 	kb, err := keybd_event.NewKeyBonding()
 	if err != nil {

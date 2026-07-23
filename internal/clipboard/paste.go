@@ -19,6 +19,9 @@ import (
 )
 
 const (
+	// These fixed margins target ordinary short-text pastes. The transaction
+	// does not attempt readiness detection for unusually large clipboard
+	// payloads or application-specific paste latency.
 	clipboardWriteDelay   = 80 * time.Millisecond
 	clipboardRestoreDelay = 120 * time.Millisecond
 )
@@ -56,6 +59,10 @@ func pasteText(text string, ops pasteOperations) (err error) {
 	}
 
 	pasteSent := false
+	// Restoration is intentionally unconditional. On Windows, the text-only
+	// adapter maps an empty or non-text clipboard to "", which can leave a
+	// cosmetic blank item in clipboard history. That known behavior is retained
+	// instead of trying to infer or manipulate the separately managed history.
 	defer func() {
 		restoreErr := ops.writeAll(original)
 		if restoreErr == nil {

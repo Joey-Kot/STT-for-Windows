@@ -54,6 +54,8 @@ type Event struct {
 }
 
 // Runtime owns recorder, uploader, hotkeys, and shared state transitions.
+// The application is designed for one process; actionMu intentionally provides
+// only in-process serialization rather than cross-process coordination.
 type Runtime struct {
 	mu          sync.Mutex
 	actionMu    sync.Mutex
@@ -402,6 +404,9 @@ func (r *Runtime) transcribeResult(res record.Result) {
 		return
 	}
 
+	// Success means the clipboard transaction and Ctrl+V dispatch completed.
+	// Whether the current foreground control accepts the paste is intentionally
+	// outside the runtime's responsibility and is not verified.
 	if cfg.Notification {
 		notify.Notify("STT", "Paste success")
 	}
