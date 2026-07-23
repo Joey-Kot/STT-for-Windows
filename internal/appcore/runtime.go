@@ -173,7 +173,9 @@ func (r *Runtime) StartHotkeys() error {
 	r.mu.Unlock()
 
 	reg, err := hotkey.RegisterWithStop(cfg.StartKey, cfg.PauseKey, cfg.CancelKey, cfg.HotKeyHook, func(id int) {
-		r.HandleAction(id)
+		if !r.tryHandleHotkey(id) && cfg.HOTKEY_DEBUG {
+			fmt.Printf("[hotkey-debug] dropped action id=%d while another action is in progress\n", id)
+		}
 	}, cfg.HOTKEY_DEBUG)
 	if err != nil {
 		return err
@@ -227,6 +229,25 @@ func (r *Runtime) HandleAction(id int) {
 	r.actionMu.Lock()
 	defer r.actionMu.Unlock()
 
+	r.handleActionLocked(id)
+}
+
+// tryHandleHotkey admits a hotkey only when no runtime action is in progress.
+// Acquiring the lock before dispatch prevents hotkeys captured during a long
+// transcription from waiting and executing against a later runtime state.
+func (r *Runtime) tryHandleHotkey(id int) bool {
+	if !r.actionMu.TryLock() {
+		return false
+	}
+
+	go func() {
+		defer r.actionMu.Unlock()
+		r.handleActionLocked(id)
+	}()
+	return true
+}
+
+func (r *Runtime) handleActionLocked(id int) {
 	switch id {
 	case 1:
 		r.toggleRecordingLocked()

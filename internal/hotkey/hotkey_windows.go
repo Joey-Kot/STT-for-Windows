@@ -43,12 +43,14 @@ func (r *Registration) Stop() {
 }
 
 // Register installs hotkeys and wires them to handler.
+// The handler runs synchronously on the hotkey thread and must return promptly.
 func Register(startKey, pauseKey, cancelKey string, hook bool, handler func(id int), debug bool) error {
 	_, err := RegisterWithStop(startKey, pauseKey, cancelKey, hook, handler, debug)
 	return err
 }
 
 // RegisterWithStop installs hotkeys and returns a handle that can unregister them.
+// The handler runs synchronously on the hotkey thread and must return promptly.
 func RegisterWithStop(startKey, pauseKey, cancelKey string, hook bool, handler func(id int), debug bool) (*Registration, error) {
 	if hook {
 		return startLowLevelHook(startKey, pauseKey, cancelKey, handler, debug)
@@ -300,7 +302,7 @@ func startLowLevelHook(startKey, pauseKey, cancelKey string, handler func(id int
 							if debug {
 								fmt.Printf("[hotkey-debug] swallowed keydown vk=0x%X id=%d\n", vk, c.id)
 							}
-							go handler(c.id)
+							handler(c.id)
 							return uintptr(1)
 						}
 					}

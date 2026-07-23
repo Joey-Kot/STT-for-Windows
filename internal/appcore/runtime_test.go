@@ -47,6 +47,26 @@ func TestRuntimeSnapshotAndEventHandler(t *testing.T) {
 	}
 }
 
+func TestTryHandleHotkeyDropsActionWhileBusy(t *testing.T) {
+	r := &Runtime{}
+	r.actionMu.Lock()
+	defer r.actionMu.Unlock()
+
+	result := make(chan bool, 1)
+	go func() {
+		result <- r.tryHandleHotkey(0)
+	}()
+
+	select {
+	case accepted := <-result:
+		if accepted {
+			t.Fatal("tryHandleHotkey accepted an action while actionMu was locked")
+		}
+	case <-time.After(time.Second):
+		t.Fatal("tryHandleHotkey blocked instead of dropping the action")
+	}
+}
+
 func TestNewHTTPClientHonorsConfig(t *testing.T) {
 	cfg := config.DefaultConfig()
 	cfg.RequestTimeout = 7
