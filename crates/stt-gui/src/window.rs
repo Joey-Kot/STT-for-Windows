@@ -121,7 +121,9 @@ fn run_inner() -> Result<(), String> {
         return Err(windows::core::Error::from_win32().to_string());
     }
 
-    let rounded = platform::supports_rounded_corners();
+    // Keep one floating-window visual on Windows 10 and 11. Windows 10 safely ignores the
+    // unsupported DWM corner preference while Direct2D still draws the rounded panel.
+    let rounded = true;
     let dpi = platform::system_dpi();
     let mut renderer = Renderer::new().map_err(|error| error.to_string())?;
     renderer.set_dpi(dpi);

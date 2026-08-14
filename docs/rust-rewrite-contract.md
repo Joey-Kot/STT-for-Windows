@@ -177,7 +177,9 @@ WebView or embedded browser runtime.
 - Drag threshold is about 4 px; dragging minimal mode from the microphone does
   not activate recording on release.
 - Minimal hides settings/status and removes the taskbar tab.
-- Windows build 22000+ requests rounded DWM corners; older builds do not.
+- Full and minimal floating panels always use the same 8 logical pixel Direct2D
+  corner radius and request rounded DWM corners; Windows versions without that
+  DWM attribute keep the app-drawn shape.
 - Tray menu remains Minimal, Settings, Quit and emits no balloon.
 - Settings use native tab/edit/button/checkbox/combobox controls. Token is a
   password edit. Display languages are English, Simplified Chinese, German,
