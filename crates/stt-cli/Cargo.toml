@@ -1,0 +1,19 @@
+[package]
+name = "stt-cli"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+[[bin]]
+name = "stt"
+path = "src/main.rs"
+
+[dependencies]
+async-trait.workspace = true
+clap.workspace = true
+stt-core = { path = "../stt-core" }
+tokio.workspace = true
+tokio-util.workspace = true

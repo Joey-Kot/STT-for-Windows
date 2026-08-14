@@ -1,250 +1,758 @@
+English | [简体中文](README_ZH.md)
+
 # STT for Windows
 
-![STT for Windows GUI](docs/images/Screenshot.png)
+STT for Windows is a local speech-to-text client for Windows x86_64. It records microphone audio through global hotkeys or a native floating window, sends the completed audio file to a compatible ASR HTTP endpoint, extracts the transcription, and automatically pastes it at the current input position.
 
-Windows 桌面语音转写客户端，支持 GUI 浮窗和 CLI 两种使用方式。程序通过快捷键控制录音，将音频上传到兼容 REST 接口的 ASR 服务，并把识别结果写入剪贴板后自动粘贴到当前输入位置。
+The project provides two Rust programs:
 
-## 主要特性
+- `STT.exe`: a native Win32 GUI that statically links PortAudio and a trimmed FFmpeg/libav build, ready to run after extraction.
+- `stt.exe`: a command-line program that supports hotkey-controlled recording and transcription of existing audio files, using `ffmpeg.exe` from `PATH` for audio conversion.
 
-- GUI 桌面客户端：浮窗录音控制、minimal 工具条、系统托盘、Settings 配置界面。
-- CLI 客户端：命令行参数、配置文件和热键工作流。
-- 全局快捷键：开始/停止、暂停/恢复、取消录音。
-- JSON 配置：GUI 可视化编辑，CLI 支持配置文件和命令行参数覆盖。
-- 音频处理：PortAudio 录音，ffmpeg 转码，默认 `opus/ogg`。
-- 上传与重试：支持请求超时、最大重试次数、重试延迟、HTTP/2、SSL 校验配置。
-- 结果粘贴：从返回 JSON 中按 `TEXT_PATH` 抽取文本，写入剪贴板并模拟 `Ctrl+V`。
-- 缓存能力：可选择保留录音、转码文件和响应 JSON。
+The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
 
-## 下载与使用
+## Features
 
-在 GitHub Releases 的 `Latest` 中下载需要的版本：
+- **Native Windows GUI**
+  - Borderless, always-on-top floating window with per-monitor DPI support.
+  - Full mode, minimal toolbar, system tray integration, taskbar visibility control, and a native settings window.
+  - Interface languages: English, Simplified Chinese, German, Japanese, and French.
+- **Global hotkey recording**
+  - Start or stop recording, pause or resume recording, and cancel a recording or an in-flight transcription request.
+  - Uses a low-level keyboard hook by default, with `RegisterHotKey` available as an alternative.
+- **General-purpose ASR HTTP interface**
+  - Uploads audio through `multipart/form-data` with a fixed file field named `file`.
+  - Supports Bearer tokens, model, language, prompt, and custom form fields.
+  - Supports request timeouts, exponential-backoff retries, HTTP/2, and TLS certificate verification.
+- **Cancelable processing pipeline**
+  - Recording, external FFmpeg conversion, HTTP upload, response reading, retry waits, and clipboard waits are all cancellation-aware.
+  - The cancel button and cancel hotkey remain available while the GUI is in the `Uploading` state.
+- **Automatic extraction and paste**
+  - Uses `TEXT_PATH` to read text from JSON responses, including nested objects and repeated array indexes.
+  - Saves the original clipboard text, sends `Ctrl+V`, and then attempts to restore it.
+- **Separate GUI and CLI backends**
+  - The GUI statically links libav and never searches for or launches an external FFmpeg executable.
+  - The CLI uses `ffmpeg.exe` from the system `PATH`, allowing the encoder installation to be managed independently.
+- **Caching and diagnostics**
+  - Optionally retains the original WAV, converted audio, and successful response.
+  - Provides debug output for recording, conversion, hotkeys, and uploads.
 
-| 文件 | 说明 |
-|------|------|
-| `stt-cli-windows-amd64.zip` | CLI 版本，压缩包内为 `stt.exe` 及授权文件 |
-| `stt-cli-windows-amd64.zip.sha256` | CLI 压缩包 SHA256 |
-| `stt-gui-windows-amd64.zip` | GUI 版本，压缩包内为 `STT.exe` 及授权文件 |
-| `stt-gui-windows-amd64.zip.sha256` | GUI 压缩包 SHA256 |
+## Downloads
 
-运行前请确认：
+| Component | Download | SHA-256 |
+|---|---|---|
+| GUI | [stt-gui-windows-amd64.zip](https://github.com/Joey-Kot/STT-for-Windows/releases/download/Latest/stt-gui-windows-amd64.zip) | [sha256](https://github.com/Joey-Kot/STT-for-Windows/releases/download/Latest/stt-gui-windows-amd64.zip.sha256) |
+| CLI | [stt-cli-windows-amd64.zip](https://github.com/Joey-Kot/STT-for-Windows/releases/download/Latest/stt-cli-windows-amd64.zip) | [sha256](https://github.com/Joey-Kot/STT-for-Windows/releases/download/Latest/stt-cli-windows-amd64.zip.sha256) |
 
-- 系统为 Windows。
-- 已准备好 ASR 接口地址、Token、模型名等必要配置。
+### Which version should I use?
+
+| Use case | Recommended version |
+|---|---|
+| Daily desktop use with floating-window configuration and controls | `STT.exe` GUI |
+| Automation, scripts, or terminal-based hotkey recording | `stt.exe` CLI |
+| Transcribing an existing audio file to a text file | `stt.exe` CLI |
+| No FFmpeg installation desired | `STT.exe` GUI |
+| Independently managing or replacing FFmpeg | `stt.exe` CLI |
+
+## Architecture
+
+`stt-core` handles configuration, recording, the runtime state machine, ASR requests, caching, hotkeys, and clipboard operations. The GUI and CLI provide different interaction models and audio conversion backends.
+
+```mermaid
+flowchart LR
+    subgraph Entry["Control entry points"]
+        GUI["STT.exe<br/>Win32 GUI"]
+        CLI["stt.exe<br/>Hotkey mode"]
+        FileMode["stt.exe --file<br/>File mode"]
+    end
+
+    GUI --> Runtime["stt-core<br/>Runtime state machine"]
+    CLI --> Runtime
+    FileMode --> FilePipeline["File transcription pipeline"]
+
+    Runtime --> Recorder["PortAudio<br/>Microphone recording"]
+    Recorder --> WAV["PCM 16-bit WAV"]
+
+    WAV --> Convert["Recording conversion abstraction"]
+    Convert -->|GUI| LibAv["Statically linked libav"]
+    Convert -->|CLI| FFmpeg["External ffmpeg.exe"]
+    FilePipeline --> FFmpeg
+
+    LibAv --> Request["ASR multipart request"]
+    FFmpeg --> Request
+    Request --> Extract["JSON + TEXT_PATH"]
+
+    Extract -->|Hotkey/GUI mode| Clipboard["CF_UNICODETEXT<br/>Ctrl+V + restore"]
+    Clipboard --> App["Current foreground app"]
+    Extract -->|File mode| TextFile["Text file"]
+```
+
+The GUI and CLI share the same configuration format and ASR request semantics. Their main differences are the interface, configuration file location, and conversion backend.
+
+## Recording and transcription flow
+
+```mermaid
+sequenceDiagram
+    actor User
+    participant Control as GUI / global hotkeys
+    participant Runtime as Rust state machine
+    participant Recorder as PortAudio
+    participant Converter as libav / ffmpeg.exe
+    participant ASR as ASR HTTP API
+    participant Clipboard as Windows clipboard
+    participant App as Current foreground app
+
+    User->>Control: Start
+    Control->>Runtime: toggle recording
+    Runtime->>Recorder: Initialize device and create WAV
+    Recorder-->>Runtime: Recording
+
+    opt Pause and resume
+        User->>Control: Pause / resume
+        Control->>Runtime: toggle pause
+        Runtime->>Recorder: Stop or resume audio reads
+    end
+
+    User->>Control: Stop
+    Control->>Runtime: toggle recording
+    Runtime->>Recorder: Stop and finalize WAV
+    Recorder-->>Runtime: RecordingResult
+    Runtime->>Runtime: Enter Uploading
+    Runtime->>Converter: Convert to configured codec and container
+    Converter-->>Runtime: Converted audio
+    Runtime->>ASR: multipart/form-data POST
+
+    alt Manual cancellation
+        User->>Control: Cancel button / CANCEL_KEY
+        Control->>Runtime: Cancel active request token
+        Runtime-->>ASR: Abort upload, response read, or retry wait
+        Runtime-->>Control: Idle / Request canceled
+    else HTTP 200
+        ASR-->>Runtime: JSON response
+        Runtime->>Runtime: Extract text through TEXT_PATH
+        Runtime->>Clipboard: Save original text and write transcription
+        Clipboard->>App: Send Ctrl+V through keybd_event
+        Runtime->>Clipboard: Restore original clipboard text
+        Runtime-->>Control: Idle
+    else Request ultimately fails
+        ASR-->>Runtime: Non-200 response or network error
+        Runtime-->>Control: Error
+    end
+```
+
+The application does not stream audio while recording. Conversion and the ASR request begin only after recording has stopped and the WAV file has been finalized.
+
+## Runtime state machine
+
+```mermaid
+stateDiagram-v2
+    [*] --> Idle
+
+    Idle --> Recording: Start
+    Error --> Recording: Start again
+
+    Recording --> Paused: Pause
+    Paused --> Recording: Resume
+
+    Recording --> Uploading: Stop and finalize WAV
+    Paused --> Uploading: Stop and finalize WAV
+
+    Recording --> Idle: Cancel recording
+    Paused --> Idle: Cancel recording
+
+    Uploading --> Idle: Paste succeeded
+    Uploading --> Idle: Empty transcription
+    Uploading --> Idle: Request canceled manually
+    Uploading --> Error: Conversion, upload, or paste failed
+
+    Error --> Idle: Valid settings saved
+```
+
+Normal actions use a non-queuing action lock. Repeated start, stop, or pause actions received while busy are dropped instead of being queued for later execution. Cancellation in the `Uploading` state is the exception: it bypasses the action lock and directly cancels the active request token.
+
+## Capabilities and current limitations
+
+- Current releases provide Windows x86_64 builds only.
+- The GUI is a native Windows-only application. The CLI source can be compiled on other systems, but global Windows hotkeys are available only on Windows.
+- Recording uses the system default input device. There is currently no microphone device selector.
+- The complete audio file is uploaded after recording; real-time streaming transcription is not supported.
+- The ASR endpoint must accept `multipart/form-data` and return JSON.
+- Only HTTP 200 is treated as success. Other status codes enter the retry or failure path.
+- The HTTP client does not use system proxies, follow redirects automatically, or enable automatic response compression.
+- GUI libav conversion is a synchronous C ABI call, so cancellation is checked before and after the call. HTTP upload, response reading, and retry waits can be canceled immediately.
+- Automatic paste targets the foreground application when transcription finishes. Changing focus while waiting changes the final paste target.
+- The GUI does not provide Windows Toast notifications, tray balloons, or other system notifications.
+- `NOTIFICATION` in older configuration files is ignored and is not written back when the configuration is saved.
+- `REQUEST_FAILED_NOTIFICATION` is not a system notification switch. It only controls whether `[request failed]` is pasted after all retries are exhausted.
+
+## Requirements
 
 ### GUI
 
-解压 `stt-gui-windows-amd64.zip`，运行 `STT.exe`。
+- Windows 10 or Windows 11 x86_64.
+- A working default microphone input device.
+- A compatible ASR HTTP endpoint.
+- No FFmpeg, PortAudio, WebView2, or Visual C++ Redistributable installation is required.
 
-GUI 版本已静态链接裁剪版 FFmpeg/libav 音频转码能力，不需要额外安装 `ffmpeg`。
+### CLI
 
-GUI 启动后会显示小型浮窗：
+- Windows x86_64.
+- A microphone for hotkey recording mode.
+- `ffmpeg.exe` available through `PATH`.
+- A compatible ASR HTTP endpoint.
 
-- 麦克风按钮：开始/停止录音。
-- 暂停按钮：暂停/恢复录音。
-- 取消按钮：取消当前录音。
-- `-` 按钮：进入 minimal 工具条。
-- minimal 工具条中的 `+` 按钮：恢复完整浮窗。
-- 托盘菜单：`Minimal`、`Settings`、`Quit`。
+Verify FFmpeg:
 
-GUI 默认配置路径为：
+```powershell
+ffmpeg -version
+```
+
+### Source development
+
+- Rust 1.97 or newer.
+- The Rust `x86_64-pc-windows-gnu` target.
+- MinGW-w64, C/C++ build tools, `pkg-config`, Autoconf, Automake, Libtool, NASM, YASM, and XZ tools.
+- Network access to obtain the PortAudio, FFmpeg, and codec sources when building the static GUI dependencies.
+
+## GUI usage
+
+### First run
+
+1. Download and extract `stt-gui-windows-amd64.zip`.
+2. Run `STT.exe`.
+3. The application creates a default configuration at:
 
 ```text
 %APPDATA%\stt\config.json
 ```
 
-首次启动时如果该文件不存在，GUI 会自动生成默认配置。通过托盘菜单或浮窗设置按钮打开 `Settings` 后，可以编辑并保存 ASR JSON 配置。保存配置时需要处于空闲状态，录音、暂停或上传中不允许保存。
+4. Open settings through the gear button on the floating window or the tray menu.
+5. Set at least `API_ENDPOINT`, along with `TOKEN`, `MODEL`, and `TEXT_PATH` as required by the service.
+6. Save the settings, then start recording with the floating-window button or the default hotkey.
 
-### CLI
+The interface language is stored separately at:
 
-解压 `stt-cli-windows-amd64.zip`，在终端运行：
+```text
+%APPDATA%\stt\ui-language.txt
+```
+
+The interface language is not written to the ASR configuration file and does not change the `LANGUAGE` field sent in requests.
+
+### Floating-window controls
+
+| Control | Available states | Behavior |
+|---|---|---|
+| Microphone | `Idle`, `Error`, `Recording`, `Paused` | Starts recording, or stops recording and enters the transcription pipeline |
+| Pause/play | `Recording`, `Paused` | Pauses or resumes recording |
+| Cancel | `Recording`, `Paused`, `Uploading` | Deletes the current recording or cancels the in-flight transcription request |
+| Gear | Any state before shutdown | Opens the native settings window |
+| `-` / `+` | Any state | Switches between the full floating window and minimal toolbar |
+| Top drag handle | Full mode | Moves the floating window |
+| Toolbar background or button drag | Minimal mode | Moves the toolbar; exceeding the drag threshold suppresses the button action |
+
+Full mode displays a taskbar tab. Minimal mode hides the taskbar tab while retaining the tray icon. The tray menu contains `Minimal`, `Settings`, and `Quit`; double-clicking the tray icon restores full mode.
+
+### Settings window
+
+| Page | Contents |
+|---|---|
+| Display | Interface language and configuration file location |
+| API | Endpoint, token, model, language, prompt, text path, and extra fields |
+| Audio | Channels, sample rate, sample depth, bitrate, codec, and container |
+| Network | Timeout, retries, HTTP/2, and TLS verification |
+| Hotkeys | Three hotkeys, the low-level keyboard hook switch, and two clipboard wait intervals |
+| Cache | Cache directory, cache retention, and request-failure placeholder text |
+| Debug | FFmpeg, recording, hotkey, and upload diagnostics |
+| About | Project, author, license, and repository information |
+
+Settings can be saved only in the `Idle` or `Error` state. When settings are saved, the application validates the configuration, rebuilds the ASR client and recorder, and registers the hotkeys again.
+
+### Exit
+
+- Pressing `Esc` closes the settings window first. If settings are not open, it starts the exit flow.
+- Exiting while recording, paused, or uploading displays a confirmation dialog.
+- Exiting cancels recording and the active request, removes the tray icon, and stops the hotkey thread.
+
+## Command-line program
+
+`stt.exe` supports two modes:
+
+- **Hotkey mode**: remains active in a terminal and uses global hotkeys to record, transcribe, and paste.
+- **File mode**: transcribes an existing audio file and writes the text to a specified file.
+
+### Configuration lookup and precedence
+
+Configuration precedence is:
+
+```text
+Command-line overrides > JSON selected by --config > config.json in the current directory > defaults
+```
+
+If `--config` is not provided, the current directory does not contain `config.json`, and no configuration override is supplied, the CLI creates a default `config.json`, prints its path, and exits. Edit the file and run the program again.
+
+All long options use the standard double-hyphen form. Boolean options require an explicit `true` or `false` value. Legacy single-hyphen long options and the removed `--notification` option are not supported.
+
+### Hotkey mode
+
+Use the configuration in the current directory:
 
 ```powershell
 .\stt.exe
 ```
 
-CLI 版本会调用系统 `PATH` 中的 `ffmpeg`，运行前请确认可在终端中执行 `ffmpeg -version`。
-
-CLI 默认查找当前目录下的 `config.json`。如果当前目录没有 `config.json` 且没有提供任何命令行参数，程序会生成默认配置文件并退出。
-
-常见用法：
+Select a configuration file:
 
 ```powershell
-.\stt.exe -config config.json
+.\stt.exe --config .\config.json
 ```
+
+Use command-line overrides only:
 
 ```powershell
-.\stt.exe -api-endpoint https://api.example/v1/transcribe -token sk-xxx -file sample.wav
+.\stt.exe `
+  --api-endpoint "https://api.example.com/v1/audio/transcriptions" `
+  --token "your-token" `
+  --model "your-model" `
+  --text-path "text"
 ```
 
-## 默认快捷键
+After startup, the program prints state changes to the terminal. Press `Ctrl+C` to exit.
 
-| 动作 | 默认快捷键 |
-|------|------------|
-| 开始/停止录音 | `ctrl+alt+q` |
-| 暂停/恢复录音 | `ctrl+alt+s` |
-| 取消录音 | `alt+esc` |
+### File mode
 
-默认启用 `HOTKEY_HOOK`，使用 Windows 低级键盘钩子处理热键。如果热键注册失败，可以尝试以管理员权限运行，或在配置中改用其他组合。
+```powershell
+.\stt.exe `
+  --config .\config.json `
+  --file .\sample.wav `
+  --output .\sample.txt
+```
 
-## 配置文件
+If `--output` is omitted, the default output is `<input-file-name>.txt` in the current directory. File mode first converts the input according to the audio configuration and then uploads it for transcription. It does not register global hotkeys or paste automatically.
 
-GUI 和 CLI 使用兼容的 JSON 配置格式。GUI 默认使用 `%APPDATA%\stt\config.json`，CLI 默认使用当前目录的 `config.json`，两者不会互相修改默认读取路径。
+### CLI options
 
-主要配置字段：
+`--help` displays options in groups corresponding to the GUI settings pages.
 
-| 字段 | 类型 | 默认值 | 说明 |
-|------|------|--------|------|
-| `API_ENDPOINT` | string | `""` | ASR 上传端点 URL |
-| `TOKEN` | string | `""` | 授权 token |
-| `MODEL` | string | `""` | 模型名称 |
-| `LANGUAGE` | string | `""` | 语言 |
-| `PROMPT` | string | `""` | 提示词 |
-| `TEXT_PATH` | string | `"text"` | 从返回 JSON 中抽取文本的路径 |
-| `ExtraConfig` | string | `""` | 字符串化 JSON，解析为根级字段并覆盖基础字段 |
-| `CHANNELS` | int | `1` | 录音通道数 |
-| `SAMPLING_RATE` | int | `16000` | 采样率，单位 Hz |
-| `SAMPLING_RATE_DEPTH` | int | `16` | 采样位深 |
-| `BIT_RATE` | int | `32` | 音频比特率，单位 kbps |
-| `CODECS` | string | `"opus"` | 编码器 |
-| `CONTAINER` | string | `"ogg"` | 容器格式 |
-| `REQUEST_TIMEOUT` | int | `60` | 请求超时，单位秒 |
-| `MAX_RETRY` | int | `3` | 上传最大重试次数 |
-| `RETRY_BASE_DELAY` | float | `0.5` | 重试间隔基准，单位秒 |
-| `ENABLE_HTTP2` | bool | `true` | 是否启用 HTTP/2 |
-| `VERIFY_SSL` | bool | `true` | 是否验证 SSL 证书 |
-| `HOTKEY_HOOK` | bool | `true` | 是否使用低级键盘钩子 |
-| `START_KEY` | string | `"ctrl+alt+q"` | 开始/停止录音热键 |
-| `PAUSE_KEY` | string | `"ctrl+alt+s"` | 暂停/恢复录音热键 |
-| `CANCEL_KEY` | string | `"alt+esc"` | 取消录音热键 |
-| `CACHE_DIR` | string | `""` | 缓存目录路径，空则使用当前目录 |
-| `KEEP_CACHE` | bool | `false` | 是否保存录音、转码文件和响应 |
-| `NOTIFICATION` | bool | `false` | 是否启用 Windows 通知 |
-| `REQUEST_FAILED_NOTIFICATION` | bool | `false` | 请求失败后是否粘贴占位提示 |
-| `FFMPEG_DEBUG` | bool | `false` | ffmpeg 调试输出 |
-| `RECORD_DEBUG` | bool | `false` | 录音调试输出 |
-| `HOTKEY_DEBUG` | bool | `true` | 热键调试输出 |
-| `UPLOAD_DEBUG` | bool | `false` | 上传调试输出 |
+#### General
 
-`TEXT_PATH` 支持点分路径和数组索引，例如：
+| Option | Purpose |
+|---|---|
+| `--config <PATH>` | Selects a JSON configuration file |
+| `--file <PATH>` | Enters file mode with an existing audio file |
+| `--output <PATH>` | Sets the text output path for file mode |
+
+#### API
+
+| Option | Purpose |
+|---|---|
+| `--api-endpoint <URL>` | Overrides the ASR endpoint |
+| `--token <TOKEN>` | Overrides the Bearer token |
+| `--model <MODEL>` | Overrides the model field |
+| `--language <LANGUAGE>` | Overrides the request language field |
+| `--prompt <TEXT>` | Overrides the prompt |
+| `--text-path <PATH>` | Overrides the response text path |
+| `--extra-config <JSON>` | Overrides the stringified extra JSON object |
+
+#### Audio
+
+| Option | Purpose |
+|---|---|
+| `--codecs <CODEC>` | Overrides the audio codec |
+| `--container <FORMAT>` | Overrides the audio container |
+| `--channels <N>` | Overrides the channel count |
+| `--sampling-rate <HZ>` | Overrides the sample rate; `--rate` is a compatibility alias |
+| `--sampling-rate-depth <BITS>` | Overrides the conversion sample depth |
+| `--bit-rate <KBPS>` | Overrides the audio bitrate |
+
+#### Network
+
+| Option | Purpose |
+|---|---|
+| `--request-timeout <SECONDS>` | Overrides the per-request client timeout |
+| `--max-retry <N>` | Overrides the maximum number of request attempts |
+| `--retry-base-delay <SECONDS>` | Overrides the initial exponential-backoff delay |
+| `--enable-http2 <BOOL>` | Enables or disables HTTP/2 |
+| `--verify-ssl <BOOL>` | Enables or disables TLS certificate verification |
+
+#### Hotkeys
+
+| Option | Purpose |
+|---|---|
+| `--start-key <HOTKEY>` | Overrides the start/stop hotkey |
+| `--pause-key <HOTKEY>` | Overrides the pause/resume hotkey |
+| `--cancel-key <HOTKEY>` | Overrides the recording/request cancellation hotkey |
+| `--hotkey-hook <BOOL>` | Selects the low-level keyboard hook or `RegisterHotKey` |
+| `--clipboard-write-delay <MS>` | Overrides the wait after writing the transcription and before sending `Ctrl+V` |
+| `--clipboard-restore-delay <MS>` | Overrides the wait after sending `Ctrl+V` and before restoring the original clipboard |
+
+#### Cache
+
+| Option | Purpose |
+|---|---|
+| `--cache-dir <PATH>` | Overrides the cache directory |
+| `--keep-cache <BOOL>` | Controls whether cache files are retained |
+| `--request-failed-notification <BOOL>` | Controls whether `[request failed]` is pasted after failure |
+
+#### Debug
+
+| Option | Purpose |
+|---|---|
+| `--ffmpeg-debug <BOOL>` | Enables FFmpeg debug output |
+| `--record-debug <BOOL>` | Enables recording debug output |
+| `--hotkey-debug <BOOL>` | Enables hotkey debug output |
+| `--upload-debug <BOOL>` | Enables upload debug output |
+
+`--help` displays the complete help text, and `--version` displays the version.
+
+Clap returns exit code `2` for argument parsing failures. Runtime, request, conversion, or file errors return `1`. Success and the initial creation of a default configuration return `0`.
+
+## Configuration file
+
+The GUI and CLI use the same JSON data structure. Missing fields receive their default values, and unknown fields are ignored.
+
+### OpenAI-compatible endpoint example
+
+```json
+{
+  "API_ENDPOINT": "https://api.openai.com/v1/audio/transcriptions",
+  "TOKEN": "sk-xxx",
+  "MODEL": "gpt-4o-mini-transcribe",
+  "LANGUAGE": "zh",
+  "PROMPT": "",
+  "TEXT_PATH": "text",
+  "ExtraConfig": "{\"response_format\":\"json\",\"temperature\":0}",
+  "CHANNELS": 1,
+  "SAMPLING_RATE": 16000,
+  "SAMPLING_RATE_DEPTH": 16,
+  "BIT_RATE": 128,
+  "CODECS": "mp3",
+  "CONTAINER": "mp3",
+  "REQUEST_TIMEOUT": 300,
+  "MAX_RETRY": 3,
+  "RETRY_BASE_DELAY": 0.5,
+  "ENABLE_HTTP2": true,
+  "VERIFY_SSL": true,
+  "HOTKEY_HOOK": true,
+  "START_KEY": "ctrl+alt+q",
+  "PAUSE_KEY": "ctrl+alt+s",
+  "CANCEL_KEY": "alt+esc",
+  "CLIPBOARD_WRITE_DELAY": 80,
+  "CLIPBOARD_RESTORE_DELAY": 120,
+  "CACHE_DIR": "",
+  "KEEP_CACHE": false,
+  "REQUEST_FAILED_NOTIFICATION": false,
+  "FFMPEG_DEBUG": false,
+  "RECORD_DEBUG": false,
+  "HOTKEY_DEBUG": false,
+  "UPLOAD_DEBUG": false
+}
+```
+
+This is only a protocol example. The actual model name, fields, supported audio formats, and timeout should follow the requirements of the selected ASR service. Keep `VERIFY_SSL=true` for normal public services.
+
+### API and response fields
+
+| Field | Default | Behavior |
+|---|---:|---|
+| `API_ENDPOINT` | `""` | ASR POST endpoint; must not be empty when uploading |
+| `TOKEN` | `""` | Sends `Authorization: Bearer <token>` when non-empty |
+| `MODEL` | `""` | Sends the multipart field `model` when non-empty |
+| `LANGUAGE` | `""` | Sends the multipart field `language` when non-empty |
+| `PROMPT` | `""` | Sends the multipart field `prompt` when non-empty |
+| `TEXT_PATH` | `"text"` | Reads the transcription from the JSON response |
+| `ExtraConfig` | `""` | Stringified JSON object used to add, remove, or override multipart fields |
+
+### Audio fields
+
+| Field | Default | Validation and behavior |
+|---|---:|---|
+| `CHANNELS` | `1` | Allowed range: 1–8; used by both recording and conversion |
+| `SAMPLING_RATE` | `16000` | Must be greater than 0, in Hz |
+| `SAMPLING_RATE_DEPTH` | `16` | Allowed values: 8, 16, 24, or 32; affects conversion only and does not change the recorded WAV from PCM 16-bit |
+| `BIT_RATE` | `32` | Must be greater than 0, in kbps |
+| `CODECS` | `"opus"` | Encoder name or compatible alias, case-insensitive |
+| `CONTAINER` | `"ogg"` | Output container/extension, case-insensitive |
+
+Common outputs covered by the static GUI build include Opus/Ogg, MP3, AAC, FLAC, Vorbis, and WAV/PCM. The build also includes several additional encoders and muxers; the selected codec and container must form a valid combination.
+
+### Network fields
+
+| Field | Default | Behavior |
+|---|---:|---|
+| `REQUEST_TIMEOUT` | `60` | Positive values set the reqwest client timeout in seconds; non-positive values leave it unset |
+| `MAX_RETRY` | `3` | Maximum number of request attempts, including the first request |
+| `RETRY_BASE_DELAY` | `0.5` | Delay in seconds before the first retry, doubled after each failure |
+| `ENABLE_HTTP2` | `true` | Forces HTTP/1 when `false` |
+| `VERIFY_SSL` | `true` | Accepts invalid TLS certificates when `false`; not recommended for public services |
+
+### Hotkey, clipboard, cache, and debug fields
+
+| Field | Default | Behavior |
+|---|---:|---|
+| `HOTKEY_HOOK` | `true` | Uses `WH_KEYBOARD_LL` when `true`; uses `RegisterHotKey` when `false` |
+| `START_KEY` | `"ctrl+alt+q"` | Starts or stops recording |
+| `PAUSE_KEY` | `"ctrl+alt+s"` | Pauses or resumes recording |
+| `CANCEL_KEY` | `"alt+esc"` | Cancels recording or the active transcription request |
+| `CLIPBOARD_WRITE_DELAY` | `80` | Milliseconds between writing the transcription and sending `Ctrl+V` |
+| `CLIPBOARD_RESTORE_DELAY` | `120` | Milliseconds between sending `Ctrl+V` and restoring the original clipboard |
+| `CACHE_DIR` | `""` | When non-empty, attempts to create it and convert it to an absolute path; on failure, falls back to the current directory and clears the setting |
+| `KEEP_CACHE` | `false` | Retains cache files only when `CACHE_DIR` is non-empty and usable |
+| `REQUEST_FAILED_NOTIFICATION` | `false` | Pastes `[request failed]` after retries are exhausted; does not send a system notification |
+| `FFMPEG_DEBUG` | `false` | Prints conversion backend information |
+| `RECORD_DEBUG` | `false` | Prints recording diagnostics |
+| `HOTKEY_DEBUG` | `true` | Prints hotkey registration and busy-action diagnostics |
+| `UPLOAD_DEBUG` | `false` | Prints the upload target, attempt count, and failed-response summary |
+
+## ASR API compatibility requirements
+
+The application sends an HTTP POST request:
+
+```http
+POST <API_ENDPOINT>
+User-Agent: stt-go-client/1.0
+Content-Type: multipart/form-data; boundary=<generated automatically>
+```
+
+When `TOKEN` is non-empty, the client also sends `Authorization: Bearer <TOKEN>`. The multipart `boundary` parameter is generated automatically for each request and should not be fixed manually in server-side configuration.
+
+Multipart contents:
+
+| Field | Sent when |
+|---|---|
+| `file` | Always; contains the converted audio and uses the local filename |
+| `model` | `MODEL` is non-empty |
+| `language` | `LANGUAGE` is non-empty |
+| `prompt` | `PROMPT` is non-empty |
+| Other fields | Supplied by `ExtraConfig` |
+
+Every retry reopens the audio file and rebuilds the multipart request body. System proxies, automatic redirects, and automatic gzip/brotli/deflate decompression are disabled.
+
+### ExtraConfig
+
+`ExtraConfig` is itself a JSON string whose contents must be a JSON object:
+
+```json
+{
+  "ExtraConfig": "{\"response_format\":\"json\",\"temperature\":0,\"stream\":false}"
+}
+```
+
+Merge rules:
+
+- Strings, booleans, and numbers are converted to regular form text.
+- Objects and arrays are serialized as compact JSON strings.
+- Fields with the same name override `model`, `language`, or `prompt`.
+- A `null` value removes the corresponding built-in field.
+- Merging is shallow; objects are not merged recursively.
+
+For example, this configuration removes `language` and overrides `model`:
+
+```json
+{
+  "ExtraConfig": "{\"language\":null,\"model\":\"custom-model\"}"
+}
+```
+
+### TEXT_PATH
+
+`TEXT_PATH` uses dot-separated object fields and allows any number of array indexes after a field:
 
 ```text
+text
+result.transcript
 results[0].alternatives[0].transcript
+data.items[0][1].text
 ```
 
-`ExtraConfig` 接受一个 JSON 字符串，解析后会合并到上传请求的根级字段中，适合注入服务端要求的额外参数。
+Strings, numbers, and booleans are converted to text. If the configured path cannot be read, the application tries, in order:
 
-## CLI 参数
+1. Top-level `text`.
+2. The first non-empty top-level string field.
+3. An empty string.
 
-命令行参数优先级高于配置文件，会覆盖配置文件中的对应设置。
+Text cannot be extracted from a non-JSON response. If an HTTP 200 response produces an empty result, the state returns to `Idle` without pasting placeholder text.
 
-| 参数 | 说明 |
-|------|------|
-| `-config <path>` | 指定配置文件 |
-| `-file <path>` | 上传本地已有音频文件 |
-| `-api-endpoint <url>` | ASR 上传端点 URL |
-| `-token <token>` | 授权 token |
-| `-model <model>` | 模型名称 |
-| `-language <lang>` | 语言 |
-| `-prompt <text>` | 提示词 |
-| `-text-path <path>` | 自定义从返回 JSON 中抽取文本的路径 |
-| `-extra-config <json>` | 额外 JSON 字符串，解析并合并到请求 payload |
-| `-codecs` | 编码器 |
-| `-container` | 容器格式 |
-| `-channels` | 录音通道数 |
-| `-sampling-rate` | 采样率 |
-| `-sampling-rate-depth` | 采样位深 |
-| `-bit-rate` | 比特率 |
-| `-request-timeout` | 请求超时 |
-| `-max-retry` | 最大重试次数 |
-| `-retry-base-delay` | 重试基准延迟 |
-| `-enable-http2` | 启用 HTTP/2 |
-| `-verify-ssl` | 验证 SSL 证书 |
-| `-start-key` | 开始/停止录音热键 |
-| `-pause-key` | 暂停/恢复录音热键 |
-| `-cancel-key` | 取消录音热键 |
-| `-hotkeyhook` | 使用低级键盘钩子 |
-| `-cache-dir` | 缓存目录 |
-| `-keep-cache` | 保存录音与响应 |
-| `-notification` | 启用通知 |
-| `-request-failed-notification` | 重试耗尽后粘贴占位符 |
-| `-ffmpeg-debug` | ffmpeg 调试开关 |
-| `-record-debug` | 录音调试开关 |
-| `-hotkey-debug` | 热键调试开关 |
-| `-upload-debug` | 上传调试开关 |
+### Retries and cancellation
 
-## 构建
+- Request errors and non-200 responses enter the retry flow.
+- `MAX_RETRY` includes the first request.
+- The wait begins at `RETRY_BASE_DELAY` and is multiplied by 2 after each failure.
+- Manual cancellation aborts an in-progress request send, response read, or retry wait.
+- Cancellation is not an error: the GUI returns to `Idle` and displays “Request canceled.”
+- `[request failed]` is pasted only when retries are exhausted and `REQUEST_FAILED_NOTIFICATION=true`.
 
-### GitHub Actions
+## Default hotkeys and syntax
 
-仓库已配置 `.github/workflows/latest-release.yml`：
+| Action | Default hotkey |
+|---|---|
+| Start/stop recording | `ctrl+alt+q` |
+| Pause/resume recording | `ctrl+alt+s` |
+| Cancel recording/transcription request | `alt+esc` |
 
-- 向 `main` 分支提交时自动触发。
-- 也可以在 Actions 页面通过 `workflow_dispatch` 手动触发。
-- 构建 Windows amd64 CLI 和 GUI。
-- 发布到 `Latest` Release。
-- 上传 CLI/GUI zip 以及对应 SHA256 文件。
+Supported modifier aliases:
 
-### 本地构建 CLI
+- `alt`, `menu`
+- `ctrl`, `control`
+- `shift`
+- `win`, `meta`, `super`
 
-Windows 本机开发构建需要 Go、PortAudio 和 ffmpeg：
+Supported keys include letters, digits, `F1`–`F24`, arrow keys, `Esc`, `Space`, `Enter`, `Tab`, `Backspace`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, and numeric keypad aliases.
 
-```powershell
-go build -o stt.exe
+Hotkeys are case-insensitive. Repeated modifiers, unknown keys, and equivalent duplicate bindings across the three actions are rejected.
+
+When `HOTKEY_HOOK=true`, the low-level keyboard hook:
+
+- Ignores injected keyboard events.
+- Suppresses repeated triggers while a hotkey is held.
+- Requires the configured modifiers but allows additional modifiers to be held.
+
+When `HOTKEY_HOOK=false`, the application uses `RegisterHotKey` with `MOD_NOREPEAT`.
+
+## Clipboard and automatic paste
+
+The Windows GUI and hotkey mode use `CF_UNICODETEXT`:
+
+1. Read and save the current clipboard text.
+2. Write the transcription.
+3. Wait `CLIPBOARD_WRITE_DELAY` milliseconds; the default is 80.
+4. Send `Ctrl+V` through `keybd_event`.
+5. Wait `CLIPBOARD_RESTORE_DELAY` milliseconds; the default is 120.
+6. Attempt to restore the original clipboard text whether or not the preceding steps succeeded.
+
+Both wait intervals are available on the GUI `Hotkeys` page and through the corresponding JSON fields or CLI `Hotkeys` option group. Missing fields retain the 80 ms and 120 ms defaults.
+
+The project explicitly does not use `SendInput`. If the paste shortcut was sent but restoration of the original clipboard failed, the application distinguishes that condition from a failure before paste.
+
+## Cache and temporary files
+
+At startup, the application removes every file or directory in the active temporary directory whose name begins with `RecordTemp_`.
+
+Temporary recording names:
+
+```text
+RecordTemp_<16 hexadecimal characters>.wav
 ```
 
-Linux 交叉编译 Windows 版本时，需要 mingw-w64、PortAudio Windows 静态库，并设置 `CC`、`CGO_ENABLED`、`GOOS`、`GOARCH`、`PKG_CONFIG_PATH` 等环境变量。CI 中的 `.github/workflows/latest-release.yml` 可作为参考。
+The converted file keeps the same base name and uses the configured container extension. When both input and output are WAV, `_convert` is added to the converted filename to avoid overwriting the original recording.
 
-### 本地构建 GUI
+When `KEEP_CACHE=false` or `CACHE_DIR` is empty, temporary audio is deleted after processing. When caching is enabled, files are renamed to:
 
-GUI 位于 `GUI/`，使用 Wails v2：
-
-```powershell
-cd GUI
-npm --prefix frontend install
-npm --prefix frontend run build
-wails build -platform windows/amd64
+```text
+audio-YYYY-MM-DD-HH.MM.SS.<ext>
 ```
 
-交叉编译 GUI 时同样需要 Windows 版 PortAudio 和 mingw-w64。GUI 构建还会通过 `scripts/build-ffmpeg-windows-amd64.sh` 编译裁剪版 FFmpeg/libav 静态库，并使用 `GOFLAGS=-tags=gui_ffmpeg_cgo` 启用内置转码实现；建议直接参考 CI 配置。
+Only an HTTP 200 response is written to the corresponding `.json` file. Failures and cancellations before a successful response do not produce a response JSON file.
 
-## 第三方组件
+## Build from source
 
-STT for Windows 使用 PortAudio 提供音频输入/输出能力。
+Official releases are cross-compiled on Ubuntu using MinGW-w64 and the Rust `x86_64-pc-windows-gnu` target.
 
-GUI 版本内嵌了裁剪版 FFmpeg/libav，用于音频解码、重采样、编码和封装。
-因此 GUI 版无需额外安装 `ffmpeg`。
+### Install the Rust target
 
-FFmpeg 根据构建配置不同，使用 LGPL-2.1-or-later 或 GPL-2.0-or-later 授权。
-PortAudio 使用 MIT License 授权。本项目使用 GPL-3.0 授权，并且不会有意启用 FFmpeg 的 nonfree 组件。
+```bash
+rustup target add x86_64-pc-windows-gnu
+rustup component add rustfmt clippy
+```
 
-详情及完整许可证文本见 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) 和
-[`THIRD_PARTY_LICENSES/`](THIRD_PARTY_LICENSES/)。
+### Tests and static checks
 
-## 临时文件与缓存
+```bash
+cargo fmt --all --check
+cargo test --workspace
+cargo clippy --workspace --all-targets -- -D warnings
+cargo check --workspace \
+  --target x86_64-pc-windows-gnu \
+  --features stt-gui/native-gui
+```
 
-- 录音阶段会创建 `RecordTemp_<uuid>.wav` 和转码后的 `RecordTemp_<uuid>.<ext>`。
-- 如果配置了 `CACHE_DIR`，临时文件会写入该目录；否则使用当前工作目录。
-- 程序启动时会清理当前临时目录下以 `RecordTemp_` 开头的文件。
-- 启用 `KEEP_CACHE` 后，会按时间戳保留录音、转码文件和响应 JSON。
+### Build native dependencies and programs
 
-## 常见问题
+```bash
+scripts/build-portaudio-windows-amd64.sh
+scripts/build-ffmpeg-windows-amd64.sh
+scripts/build-rust-windows-amd64.sh
+scripts/package-windows-release.sh
+```
 
-- 无法初始化 PortAudio：确认 PortAudio 可用，或确认打包版本没有缺少运行时依赖。
-- ffmpeg 转码失败：CLI 请确认 `ffmpeg` 在 `PATH` 中；GUI 可开启 `FFMPEG_DEBUG` 查看内置 libav 转码详情。
-- 热键不可用：尝试管理员权限运行，或更换热键组合；检查是否与其他软件冲突。
-- 上传失败：检查 `API_ENDPOINT`、`TOKEN`、`MODEL` 等配置；可开启 `UPLOAD_DEBUG` 查看请求与响应。
-- 结果没有粘贴：确认目标应用焦点在输入框，且允许 `Ctrl+V` 粘贴。
-- GUI 保存失败：录音、暂停或上传中不能保存配置，回到空闲状态后再保存。
+Build outputs:
 
-## 安全注意
+```text
+dist/cli/stt.exe
+dist/gui/STT.exe
+dist/stt-cli-windows-amd64.zip
+dist/stt-gui-windows-amd64.zip
+```
 
-- `TOKEN` 属于敏感信息，请勿提交到公开仓库或日志中。
-- `UPLOAD_DEBUG` 可能输出请求/响应内容，排查问题后建议关闭。
-- 将 `VERIFY_SSL` 设为 `false` 会跳过 HTTPS 证书验证，在不受信任网络中存在风险。
+`scripts/build-portaudio-windows-amd64.sh` builds the PortAudio WMME backend without WASAPI. After using `--disable-everything`, `scripts/build-ffmpeg-windows-amd64.sh` enables only the protocols, WAV decoder, audio encoders, and muxers required by the GUI.
+
+GitHub Actions also verifies:
+
+- Formatting, tests, and `clippy -D warnings`.
+- Windows API and MinGW target compilation.
+- The PortAudio backend includes WMME and excludes WASAPI.
+- The FFmpeg build does not enable `nonfree`.
+- The GUI does not import `SendInput`.
+- The GUI does not contain the external FFmpeg backend.
+- The GUI has no dynamic dependency on PortAudio or libav DLLs.
+- `NOTICE` and `THIRD_PARTY_LICENSES/` are complete.
+
+After a successful build, the workflow updates the `Latest` tag and Release, then uploads the GUI, CLI, and their SHA-256 files.
+
+## Security and privacy
+
+- Recording and conversion are performed locally by default. Only the converted audio is sent to `API_ENDPOINT`.
+- `TOKEN` is stored as plaintext in the JSON configuration. The GUI password field only masks the displayed value and does not encrypt it on disk.
+- Keep `VERIFY_SSL=true` for public services.
+- `VERIFY_SSL=false` accepts invalid certificates and may expose the connection to man-in-the-middle attacks.
+- The HTTP client does not read system proxy settings. If a proxy is required, handle it through a trusted gateway or at the API endpoint.
+- The application does not verify whether the configured API is trustworthy. Use only services to which you are willing to send the recording.
+- `CACHE_DIR` may contain original recordings, converted audio, and service responses and should be handled as sensitive data.
+- Automatic paste depends on the current foreground window. After starting a recording, do not leave input focus in a window that should not receive the transcription.
+
+## Implementation constraints
+
+- Recording: PortAudio C blocking API, default input device, and WMME; WASAPI is not used.
+- Recording format: interleaved signed int16; temporary WAV files are always PCM 16-bit.
+- GUI conversion: statically linked libav C ABI; does not launch `ffmpeg.exe`.
+- CLI conversion: external `ffmpeg.exe`; cancellation terminates the child process.
+- GUI: Win32 message loop, Direct2D, DirectWrite, and native controls; no embedded WebView.
+- Tray: `Shell_NotifyIconW`; no tray balloons.
+- Paste: `keybd_event`; `SendInput` is not used.
+- Notifications: no Windows system notifications.
+- Configuration: validated before saving; missing fields use defaults, and unknown fields are ignored.
+
+For precise compatibility behavior, see the [Rust rewrite compatibility contract](docs/rust-rewrite-contract.md). For the boundary between automated and manual validation, see the [Rust technical validation record](docs/rust-technical-validation.md).
+
+## Repository layout
+
+| Component | Path | Purpose / output |
+|---|---|---|
+| Core library | `crates/stt-core/` | Configuration, ASR, cache, recording, hotkeys, clipboard, and state machine |
+| CLI | `crates/stt-cli/` | `stt.exe` |
+| Native GUI | `crates/stt-gui/` | `STT.exe` |
+| libav bridge | `native/` | C ABI used by the GUI |
+| Build scripts | `scripts/` | PortAudio, FFmpeg, Rust, and release package builds |
+| Windows resources | `assets/` | Application icon and other resources |
+| Example configurations | `examples/` | Provider configuration examples |
+| Behavior and validation documentation | `docs/` | Rust compatibility contract and technical validation record |
+| Release workflow | `.github/workflows/latest-release.yml` | Builds and updates the `Latest` Release |
+
+## Third-party components
+
+The GUI release package statically links:
+
+- FFmpeg/libav n7.1.1
+- PortAudio v19.7.0
+- Opus v1.5.2
+- LAME 3.100
+- libogg 1.3.5
+- libvorbis 1.3.7
+- OpenCore AMR 0.1.6
+
+See [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for a summary. Complete license texts are in [THIRD_PARTY_LICENSES/](THIRD_PARTY_LICENSES/).
 
 ## License
 
-This project is licensed under the GNU General Public License v3.0 or later.
-See [LICENSE](LICENSE) for details. Third-party dependency notices and complete
-license texts are available in [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)
-and [`THIRD_PARTY_LICENSES/`](THIRD_PARTY_LICENSES/).
+This project is licensed under the [GNU General Public License v3.0 or later](LICENSE).
+
+Copyright © 2026 Joey Kot <joey.kot.x@gmail.com>

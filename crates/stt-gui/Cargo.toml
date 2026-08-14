@@ -1,0 +1,36 @@
+[package]
+name = "stt-gui"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+build = "build.rs"
+
+[[bin]]
+name = "STT"
+path = "src/main.rs"
+required-features = ["native-gui"]
+
+[features]
+default = []
+native-gui = []
+static-libav = []
+
+[dependencies]
+async-trait.workspace = true
+parking_lot.workspace = true
+serde_json.workspace = true
+stt-core = { path = "../stt-core" }
+tokio.workspace = true
+tokio-util.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows.workspace = true
+windows-numerics = "0.2.0"
+
+[build-dependencies]
+cc = "1.2.33"
+pkg-config = "0.3.32"
+winresource = "0.1.23"

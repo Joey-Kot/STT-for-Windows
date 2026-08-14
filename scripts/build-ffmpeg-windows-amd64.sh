@@ -9,7 +9,7 @@ JOBS="${JOBS:-$(nproc)}"
 
 OGG_VERSION="${OGG_VERSION:-1.3.5}"
 VORBIS_VERSION="${VORBIS_VERSION:-1.3.7}"
-OPUS_REF="${OPUS_REF:-v1.5.2}"
+OPUS_VERSION="${OPUS_VERSION:-1.5.2}"
 LAME_VERSION="${LAME_VERSION:-3.100}"
 OPENCORE_AMR_VERSION="${OPENCORE_AMR_VERSION:-0.1.6}"
 FFMPEG_REF="${FFMPEG_REF:-n7.1.1}"
@@ -78,8 +78,9 @@ fetch_tarball "https://downloads.xiph.org/releases/vorbis/libvorbis-$VORBIS_VERS
 extract_once "$BUILD_DIR/libvorbis-$VORBIS_VERSION.tar.xz" "$BUILD_DIR/libvorbis-$VORBIS_VERSION"
 build_autotools "$BUILD_DIR/libvorbis-$VORBIS_VERSION" --disable-oggtest
 
-clone_once "https://github.com/xiph/opus.git" "$OPUS_REF" "$BUILD_DIR/opus"
-build_autotools "$BUILD_DIR/opus" --disable-extra-programs --disable-doc
+fetch_tarball "https://downloads.xiph.org/releases/opus/opus-$OPUS_VERSION.tar.gz" "$BUILD_DIR/opus-$OPUS_VERSION.tar.gz"
+extract_once "$BUILD_DIR/opus-$OPUS_VERSION.tar.gz" "$BUILD_DIR/opus-$OPUS_VERSION"
+build_autotools "$BUILD_DIR/opus-$OPUS_VERSION" --disable-extra-programs --disable-doc
 
 fetch_tarball "https://downloads.sourceforge.net/project/lame/lame/$LAME_VERSION/lame-$LAME_VERSION.tar.gz" "$BUILD_DIR/lame-$LAME_VERSION.tar.gz"
 extract_once "$BUILD_DIR/lame-$LAME_VERSION.tar.gz" "$BUILD_DIR/lame-$LAME_VERSION"

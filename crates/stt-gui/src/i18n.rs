@@ -1,0 +1,406 @@
+use std::path::PathBuf;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Language {
+    English,
+    Chinese,
+    German,
+    Japanese,
+    French,
+}
+
+impl Language {
+    pub const ALL: [Self; 5] = [
+        Self::English,
+        Self::Chinese,
+        Self::German,
+        Self::Japanese,
+        Self::French,
+    ];
+
+    pub fn code(self) -> &'static str {
+        match self {
+            Self::English => "en",
+            Self::Chinese => "zh",
+            Self::German => "de",
+            Self::Japanese => "ja",
+            Self::French => "fr",
+        }
+    }
+
+    pub fn native_name(self) -> &'static str {
+        match self {
+            Self::English => "English",
+            Self::Chinese => "中文",
+            Self::German => "Deutsch",
+            Self::Japanese => "日本語",
+            Self::French => "Français",
+        }
+    }
+
+    pub fn from_code(code: &str) -> Self {
+        match code.trim() {
+            "zh" => Self::Chinese,
+            "de" => Self::German,
+            "ja" => Self::Japanese,
+            "fr" => Self::French,
+            _ => Self::English,
+        }
+    }
+
+    pub fn load() -> Self {
+        std::fs::read_to_string(preference_path())
+            .map(|value| Self::from_code(&value))
+            .unwrap_or(Self::English)
+    }
+
+    pub fn save(self) {
+        let path = preference_path();
+        if let Some(parent) = path.parent() {
+            let _ = std::fs::create_dir_all(parent);
+        }
+        let _ = std::fs::write(path, self.code());
+    }
+
+    pub fn text(self, key: &str) -> &str {
+        let table = match self {
+            Self::English => ENGLISH,
+            Self::Chinese => CHINESE,
+            Self::German => GERMAN,
+            Self::Japanese => JAPANESE,
+            Self::French => FRENCH,
+        };
+        lookup(table, key)
+            .or_else(|| lookup(ENGLISH, key))
+            .unwrap_or(key)
+    }
+}
+
+fn lookup(table: &'static [(&'static str, &'static str)], key: &str) -> Option<&'static str> {
+    table
+        .iter()
+        .find_map(|(candidate, value)| (*candidate == key).then_some(*value))
+}
+
+const ENGLISH: &[(&str, &str)] = &[
+    ("settings", "Settings"),
+    ("save", "Save"),
+    ("cancel", "Cancel"),
+    ("quit_title", "Quit STT?"),
+    ("quit_busy", "STT is recording or uploading. Quit anyway?"),
+    ("minimal", "Minimal"),
+    ("quit", "Quit"),
+    ("display", "Display"),
+    ("audio", "Audio"),
+    ("network", "Network"),
+    ("hotkeys", "Hotkeys"),
+    ("cache", "Cache"),
+    ("debug", "Debug"),
+    ("about", "About"),
+    ("display_language", "Display language"),
+    ("config_path", "Config path"),
+    ("idle", "Idle"),
+    ("API_ENDPOINT", "API endpoint"),
+    ("TOKEN", "Token"),
+    ("MODEL", "Model"),
+    ("LANGUAGE", "Language"),
+    ("PROMPT", "Prompt"),
+    ("TEXT_PATH", "Text path"),
+    ("ExtraConfig", "Extra config"),
+    ("CHANNELS", "Channels"),
+    ("SAMPLING_RATE", "Sampling rate"),
+    ("SAMPLING_RATE_DEPTH", "Sample depth"),
+    ("BIT_RATE", "Bit rate"),
+    ("CODECS", "Codec"),
+    ("CONTAINER", "Container"),
+    ("REQUEST_TIMEOUT", "Request timeout"),
+    ("MAX_RETRY", "Max retry"),
+    ("RETRY_BASE_DELAY", "Retry delay"),
+    ("ENABLE_HTTP2", "HTTP/2"),
+    ("VERIFY_SSL", "Verify SSL"),
+    ("START_KEY", "Start key"),
+    ("PAUSE_KEY", "Pause key"),
+    ("CANCEL_KEY", "Cancel key"),
+    ("HOTKEY_HOOK", "Low-level hook"),
+    ("CLIPBOARD_WRITE_DELAY", "Paste delay (ms)"),
+    ("CLIPBOARD_RESTORE_DELAY", "Restore delay (ms)"),
+    ("CACHE_DIR", "Cache dir"),
+    ("KEEP_CACHE", "Keep cache"),
+    ("REQUEST_FAILED_NOTIFICATION", "Request failed placeholder"),
+    ("FFMPEG_DEBUG", "FFmpeg debug"),
+    ("RECORD_DEBUG", "Record debug"),
+    ("HOTKEY_DEBUG", "Hotkey debug"),
+    ("UPLOAD_DEBUG", "Upload debug"),
+    ("Recording started", "Recording started"),
+    ("Recording paused", "Recording paused"),
+    ("Recording resumed", "Recording resumed"),
+    ("Recording canceled", "Recording canceled"),
+    ("Request canceled", "Request canceled"),
+    ("Uploading ASR request", "Uploading ASR request"),
+    ("Transcription pasted", "Transcription pasted"),
+    ("Empty result from ASR", "Empty result from ASR"),
+    ("Settings saved", "Settings saved"),
+];
+
+const CHINESE: &[(&str, &str)] = &[
+    ("settings", "设置"),
+    ("save", "保存"),
+    ("cancel", "取消"),
+    ("quit_title", "退出 STT？"),
+    ("quit_busy", "STT 正在录音或上传，仍要退出吗？"),
+    ("minimal", "最小模式"),
+    ("quit", "退出"),
+    ("display", "显示"),
+    ("audio", "音频"),
+    ("network", "网络"),
+    ("hotkeys", "快捷键"),
+    ("cache", "缓存"),
+    ("debug", "调试"),
+    ("about", "关于"),
+    ("display_language", "显示语言"),
+    ("config_path", "配置路径"),
+    ("idle", "空闲"),
+    ("API_ENDPOINT", "API 端点"),
+    ("TOKEN", "令牌"),
+    ("MODEL", "模型"),
+    ("LANGUAGE", "语言"),
+    ("PROMPT", "提示词"),
+    ("TEXT_PATH", "文本路径"),
+    ("ExtraConfig", "额外配置"),
+    ("CHANNELS", "声道数"),
+    ("SAMPLING_RATE", "采样率"),
+    ("SAMPLING_RATE_DEPTH", "采样位深"),
+    ("BIT_RATE", "比特率"),
+    ("CODECS", "编码"),
+    ("CONTAINER", "容器"),
+    ("REQUEST_TIMEOUT", "请求超时"),
+    ("MAX_RETRY", "最大重试次数"),
+    ("RETRY_BASE_DELAY", "重试延迟"),
+    ("ENABLE_HTTP2", "HTTP/2"),
+    ("VERIFY_SSL", "验证 SSL"),
+    ("START_KEY", "开始快捷键"),
+    ("PAUSE_KEY", "暂停快捷键"),
+    ("CANCEL_KEY", "取消快捷键"),
+    ("HOTKEY_HOOK", "低级键盘钩子"),
+    ("CLIPBOARD_WRITE_DELAY", "粘贴前等待（毫秒）"),
+    ("CLIPBOARD_RESTORE_DELAY", "恢复前等待（毫秒）"),
+    ("CACHE_DIR", "缓存目录"),
+    ("KEEP_CACHE", "保留缓存"),
+    ("REQUEST_FAILED_NOTIFICATION", "请求失败占位提示"),
+    ("FFMPEG_DEBUG", "FFmpeg 调试"),
+    ("RECORD_DEBUG", "录音调试"),
+    ("HOTKEY_DEBUG", "快捷键调试"),
+    ("UPLOAD_DEBUG", "上传调试"),
+    ("Recording started", "录音已开始"),
+    ("Recording paused", "录音已暂停"),
+    ("Recording resumed", "录音已继续"),
+    ("Recording canceled", "录音已取消"),
+    ("Request canceled", "请求已取消"),
+    ("Uploading ASR request", "正在上传识别请求"),
+    ("Transcription pasted", "识别结果已粘贴"),
+    ("Empty result from ASR", "识别结果为空"),
+    ("Settings saved", "设置已保存"),
+];
+
+const GERMAN: &[(&str, &str)] = &[
+    ("settings", "Einstellungen"),
+    ("save", "Speichern"),
+    ("cancel", "Abbrechen"),
+    ("quit_title", "STT beenden?"),
+    (
+        "quit_busy",
+        "STT nimmt auf oder lädt hoch. Trotzdem beenden?",
+    ),
+    ("minimal", "Minimal"),
+    ("quit", "Beenden"),
+    ("display", "Anzeige"),
+    ("audio", "Audio"),
+    ("network", "Netzwerk"),
+    ("hotkeys", "Tastenkürzel"),
+    ("cache", "Cache"),
+    ("debug", "Debug"),
+    ("about", "Info"),
+    ("display_language", "Anzeigesprache"),
+    ("config_path", "Konfigurationspfad"),
+    ("idle", "Bereit"),
+    ("API_ENDPOINT", "API-Endpunkt"),
+    ("TOKEN", "Token"),
+    ("MODEL", "Modell"),
+    ("LANGUAGE", "Sprache"),
+    ("PROMPT", "Prompt"),
+    ("TEXT_PATH", "Textpfad"),
+    ("ExtraConfig", "Zusatzkonfiguration"),
+    ("CHANNELS", "Kanäle"),
+    ("SAMPLING_RATE", "Abtastrate"),
+    ("SAMPLING_RATE_DEPTH", "Abtasttiefe"),
+    ("BIT_RATE", "Bitrate"),
+    ("CODECS", "Codec"),
+    ("CONTAINER", "Container"),
+    ("REQUEST_TIMEOUT", "Anfrage-Timeout"),
+    ("MAX_RETRY", "Max. Wiederholungen"),
+    ("RETRY_BASE_DELAY", "Wiederholungsverzögerung"),
+    ("ENABLE_HTTP2", "HTTP/2"),
+    ("VERIFY_SSL", "SSL prüfen"),
+    ("START_KEY", "Starttaste"),
+    ("PAUSE_KEY", "Pausentaste"),
+    ("CANCEL_KEY", "Abbruchtaste"),
+    ("HOTKEY_HOOK", "Low-Level-Hook"),
+    ("CLIPBOARD_WRITE_DELAY", "Einfügen (ms)"),
+    ("CLIPBOARD_RESTORE_DELAY", "Wiederherst. (ms)"),
+    ("CACHE_DIR", "Cache-Verzeichnis"),
+    ("KEEP_CACHE", "Cache behalten"),
+    (
+        "REQUEST_FAILED_NOTIFICATION",
+        "Platzhalter bei Anfragefehler",
+    ),
+    ("FFMPEG_DEBUG", "FFmpeg-Debug"),
+    ("RECORD_DEBUG", "Aufnahme-Debug"),
+    ("HOTKEY_DEBUG", "Hotkey-Debug"),
+    ("UPLOAD_DEBUG", "Upload-Debug"),
+    ("Recording started", "Aufnahme gestartet"),
+    ("Recording paused", "Aufnahme pausiert"),
+    ("Recording resumed", "Aufnahme fortgesetzt"),
+    ("Recording canceled", "Aufnahme abgebrochen"),
+    ("Request canceled", "Anfrage abgebrochen"),
+    ("Uploading ASR request", "ASR-Anfrage wird hochgeladen"),
+    ("Transcription pasted", "Transkription eingefügt"),
+    ("Empty result from ASR", "Leeres ASR-Ergebnis"),
+    ("Settings saved", "Einstellungen gespeichert"),
+];
+
+const JAPANESE: &[(&str, &str)] = &[
+    ("settings", "設定"),
+    ("save", "保存"),
+    ("cancel", "キャンセル"),
+    ("quit_title", "STT を終了しますか？"),
+    ("quit_busy", "録音またはアップロード中です。終了しますか？"),
+    ("minimal", "最小表示"),
+    ("quit", "終了"),
+    ("display", "表示"),
+    ("audio", "音声"),
+    ("network", "ネットワーク"),
+    ("hotkeys", "ホットキー"),
+    ("cache", "キャッシュ"),
+    ("debug", "デバッグ"),
+    ("about", "情報"),
+    ("display_language", "表示言語"),
+    ("config_path", "設定ファイルのパス"),
+    ("idle", "待機中"),
+    ("API_ENDPOINT", "API エンドポイント"),
+    ("TOKEN", "トークン"),
+    ("MODEL", "モデル"),
+    ("LANGUAGE", "言語"),
+    ("PROMPT", "プロンプト"),
+    ("TEXT_PATH", "テキストパス"),
+    ("ExtraConfig", "追加設定"),
+    ("CHANNELS", "チャンネル"),
+    ("SAMPLING_RATE", "サンプリングレート"),
+    ("SAMPLING_RATE_DEPTH", "サンプル深度"),
+    ("BIT_RATE", "ビットレート"),
+    ("CODECS", "コーデック"),
+    ("CONTAINER", "コンテナ"),
+    ("REQUEST_TIMEOUT", "リクエストタイムアウト"),
+    ("MAX_RETRY", "最大リトライ回数"),
+    ("RETRY_BASE_DELAY", "リトライ間隔"),
+    ("ENABLE_HTTP2", "HTTP/2"),
+    ("VERIFY_SSL", "SSL を検証"),
+    ("START_KEY", "開始キー"),
+    ("PAUSE_KEY", "一時停止キー"),
+    ("CANCEL_KEY", "キャンセルキー"),
+    ("HOTKEY_HOOK", "低レベルフック"),
+    ("CLIPBOARD_WRITE_DELAY", "貼り付け前の待機 (ms)"),
+    ("CLIPBOARD_RESTORE_DELAY", "復元前の待機 (ms)"),
+    ("CACHE_DIR", "キャッシュディレクトリ"),
+    ("KEEP_CACHE", "キャッシュを保持"),
+    (
+        "REQUEST_FAILED_NOTIFICATION",
+        "リクエスト失敗プレースホルダー",
+    ),
+    ("FFMPEG_DEBUG", "FFmpeg デバッグ"),
+    ("RECORD_DEBUG", "録音デバッグ"),
+    ("HOTKEY_DEBUG", "ホットキーデバッグ"),
+    ("UPLOAD_DEBUG", "アップロードデバッグ"),
+    ("Recording started", "録音を開始しました"),
+    ("Recording paused", "録音を一時停止しました"),
+    ("Recording resumed", "録音を再開しました"),
+    ("Recording canceled", "録音をキャンセルしました"),
+    ("Request canceled", "リクエストをキャンセルしました"),
+    ("Uploading ASR request", "ASR リクエストを送信中"),
+    ("Transcription pasted", "文字起こしを貼り付けました"),
+    ("Empty result from ASR", "ASR の結果が空です"),
+    ("Settings saved", "設定を保存しました"),
+];
+
+const FRENCH: &[(&str, &str)] = &[
+    ("settings", "Paramètres"),
+    ("save", "Enregistrer"),
+    ("cancel", "Annuler"),
+    ("quit_title", "Quitter STT ?"),
+    (
+        "quit_busy",
+        "STT enregistre ou envoie des données. Quitter quand même ?",
+    ),
+    ("minimal", "Minimal"),
+    ("quit", "Quitter"),
+    ("display", "Affichage"),
+    ("audio", "Audio"),
+    ("network", "Réseau"),
+    ("hotkeys", "Raccourcis"),
+    ("cache", "Cache"),
+    ("debug", "Débogage"),
+    ("about", "À propos"),
+    ("display_language", "Langue d’affichage"),
+    ("config_path", "Chemin de configuration"),
+    ("idle", "Inactif"),
+    ("API_ENDPOINT", "Point de terminaison API"),
+    ("TOKEN", "Jeton"),
+    ("MODEL", "Modèle"),
+    ("LANGUAGE", "Langue"),
+    ("PROMPT", "Invite"),
+    ("TEXT_PATH", "Chemin du texte"),
+    ("ExtraConfig", "Configuration supplémentaire"),
+    ("CHANNELS", "Canaux"),
+    ("SAMPLING_RATE", "Fréquence d’échantillonnage"),
+    ("SAMPLING_RATE_DEPTH", "Profondeur d’échantillonnage"),
+    ("BIT_RATE", "Débit binaire"),
+    ("CODECS", "Codec"),
+    ("CONTAINER", "Conteneur"),
+    ("REQUEST_TIMEOUT", "Délai de requête"),
+    ("MAX_RETRY", "Nombre max. de tentatives"),
+    ("RETRY_BASE_DELAY", "Délai de nouvelle tentative"),
+    ("ENABLE_HTTP2", "HTTP/2"),
+    ("VERIFY_SSL", "Vérifier SSL"),
+    ("START_KEY", "Touche de démarrage"),
+    ("PAUSE_KEY", "Touche de pause"),
+    ("CANCEL_KEY", "Touche d’annulation"),
+    ("HOTKEY_HOOK", "Hook bas niveau"),
+    ("CLIPBOARD_WRITE_DELAY", "Collage (ms)"),
+    ("CLIPBOARD_RESTORE_DELAY", "Restauration (ms)"),
+    ("CACHE_DIR", "Dossier du cache"),
+    ("KEEP_CACHE", "Conserver le cache"),
+    (
+        "REQUEST_FAILED_NOTIFICATION",
+        "Espace réservé en cas d’échec",
+    ),
+    ("FFMPEG_DEBUG", "Débogage FFmpeg"),
+    ("RECORD_DEBUG", "Débogage de l’enregistrement"),
+    ("HOTKEY_DEBUG", "Débogage des raccourcis"),
+    ("UPLOAD_DEBUG", "Débogage de l’envoi"),
+    ("Recording started", "Enregistrement démarré"),
+    ("Recording paused", "Enregistrement en pause"),
+    ("Recording resumed", "Enregistrement repris"),
+    ("Recording canceled", "Enregistrement annulé"),
+    ("Request canceled", "Requête annulée"),
+    ("Uploading ASR request", "Envoi de la requête ASR"),
+    ("Transcription pasted", "Transcription collée"),
+    ("Empty result from ASR", "Résultat ASR vide"),
+    ("Settings saved", "Paramètres enregistrés"),
+];
+
+fn preference_path() -> PathBuf {
+    std::env::var_os("APPDATA")
+        .map(PathBuf::from)
+        .unwrap_or_else(|| PathBuf::from("."))
+        .join("stt")
+        .join("ui-language.txt")
+}

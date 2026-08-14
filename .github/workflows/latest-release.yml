@@ -25,18 +25,13 @@ jobs:
         with:
           fetch-depth: 0
 
-      - name: Set up Go
-        uses: actions/setup-go@v5
+      - name: Install Rust stable
+        uses: dtolnay/rust-toolchain@stable
         with:
-          go-version-file: go.mod
-          cache: true
+          targets: x86_64-pc-windows-gnu
+          components: rustfmt, clippy
 
-      - name: Set up Node
-        uses: actions/setup-node@v4
-        with:
-          node-version: 22
-
-      - name: Install build dependencies
+      - name: Install native build dependencies
         run: |
           sudo apt-get update
           sudo apt-get install -y \
@@ -45,17 +40,19 @@ jobs:
             build-essential \
             curl \
             git \
-            libasound2-dev \
             libtool \
             mingw-w64 \
             nasm \
             pkg-config \
-            portaudio19-dev \
             yasm \
             xz-utils
 
-      - name: Test
-        run: go test ./...
+      - name: Test and lint
+        run: |
+          cargo fmt --all --check
+          cargo test --workspace
+          cargo clippy --workspace --all-targets -- -D warnings
+          cargo check --workspace --target x86_64-pc-windows-gnu --features stt-gui/native-gui
 
       - name: Check third-party notices
         run: |
@@ -65,26 +62,8 @@ jobs:
           grep -qi 'PortAudio' THIRD_PARTY_NOTICES.txt
           test -s THIRD_PARTY_LICENSES/FFmpeg-GPL-3.0-or-later.txt
           test -s THIRD_PARTY_LICENSES/PortAudio-MIT.txt
-          test -s THIRD_PARTY_LICENSES/Wails-MIT.txt
           test -s THIRD_PARTY_LICENSES/LAME-LGPL-2.0-only.txt
           test -s THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt
-
-      - name: Install Wails
-        run: go install github.com/wailsapp/wails/v2/cmd/wails@v2.10.2
-
-      - name: Build PortAudio for Windows
-        run: |
-          mkdir -p build
-          git clone --depth 1 --branch v19.7.0 https://github.com/PortAudio/portaudio.git build/portaudio
-          cd build/portaudio
-          ./configure \
-            --host=x86_64-w64-mingw32 \
-            --prefix="$GITHUB_WORKSPACE/build/portaudio-win" \
-            --disable-shared \
-            --enable-static \
-            CC=x86_64-w64-mingw32-gcc
-          make -j"$(nproc)"
-          make install
 
       - name: Check FFmpeg nonfree is disabled
         run: |
@@ -93,82 +72,55 @@ jobs:
             exit 1
           fi
 
-      - name: Build FFmpeg for Windows GUI
+      - name: Build PortAudio for MinGW
+        run: scripts/build-portaudio-windows-amd64.sh
+
+      - name: Verify PortAudio backend contract
+        run: |
+          portaudio_libs="$(pkg-config --static --libs build/portaudio-win/lib/pkgconfig/portaudio-2.0.pc)"
+          echo "$portaudio_libs"
+          echo "$portaudio_libs" | grep -i 'winmm'
+          if echo "$portaudio_libs" | grep -i 'wasapi'; then
+            echo "PortAudio must use WMME without WASAPI." >&2
+            exit 1
+          fi
+
+      - name: Build static FFmpeg/libav for MinGW
         run: scripts/build-ffmpeg-windows-amd64.sh
 
-      - name: Build Windows binary
-        env:
-          CC: x86_64-w64-mingw32-gcc
-          CGO_ENABLED: "1"
-          GOOS: windows
-          GOARCH: amd64
-          PKG_CONFIG_ALLOW_CROSS: "1"
-          PKG_CONFIG_PATH: ${{ github.workspace }}/build/portaudio-win/lib/pkgconfig
-        run: |
-          mkdir -p dist/package
-          export CGO_CFLAGS="$(pkg-config --cflags portaudio-2.0)"
-          export CGO_LDFLAGS="$(pkg-config --libs --static portaudio-2.0)"
-          go build -trimpath -ldflags='-s -w -extldflags "-static"' -o dist/package/stt.exe .
-          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt dist/package/
-          cp -R THIRD_PARTY_LICENSES dist/package/
+      - name: Build Rust CLI and native GUI
+        run: scripts/build-rust-windows-amd64.sh
 
-      - name: Package CLI
+      - name: Verify binary contracts
         run: |
-          cd dist/package
-          python3 -m zipfile -c ../stt-cli-windows-amd64.zip stt.exe README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt THIRD_PARTY_LICENSES/*
-          cd ../..
-          sha256sum dist/stt-cli-windows-amd64.zip > dist/stt-cli-windows-amd64.zip.sha256
-
-      - name: Build Windows GUI
-        working-directory: GUI
-        run: |
-          npm --prefix frontend run build
-          wails generate module
-          npm --prefix frontend run build
-          export CC=x86_64-w64-mingw32-gcc
-          export CGO_ENABLED=1
-          export PKG_CONFIG_ALLOW_CROSS=1
-          export PKG_CONFIG_PATH="${GITHUB_WORKSPACE}/build/portaudio-win/lib/pkgconfig:${GITHUB_WORKSPACE}/build/ffmpeg-win/lib/pkgconfig"
-          export CGO_CFLAGS="$(pkg-config --cflags portaudio-2.0 libavformat libavcodec libswresample libavutil)"
-          ffmpeg_ldflags="$(pkg-config --libs --static libavformat libavcodec libswresample libavutil)"
-          portaudio_ldflags="$(pkg-config --libs --static portaudio-2.0)"
-          export CGO_LDFLAGS="-Wl,--start-group ${ffmpeg_ldflags} ${portaudio_ldflags} -Wl,--end-group"
-          selected_ffmpeg_files="$(go list -tags gui_ffmpeg_cgo -f '{{.GoFiles}} {{.CgoFiles}}' stt/internal/audio/ffmpeg)"
-          echo "Selected ffmpeg files: ${selected_ffmpeg_files}"
-          case "${selected_ffmpeg_files}" in
-            *convert_cgo.go*)
-              ;;
-            *)
-              echo "GUI build did not select cgo FFmpeg implementation" >&2
-              exit 1
-              ;;
-          esac
-          case "${selected_ffmpeg_files}" in
-            *convert_exec.go*)
-              echo "GUI build selected external-process FFmpeg implementation" >&2
-              exit 1
-              ;;
-          esac
-          wails build -platform windows/amd64 -clean -skipbindings -s -tags gui_ffmpeg_cgo -ldflags='-s -w -extldflags "-static"'
-          if strings build/bin/STT.exe | grep -q '\[ffmpeg\] executing: ffmpeg'; then
-            echo "GUI binary still contains external-process FFmpeg implementation" >&2
+          if grep -R -n -E 'SendInput|\bbeeep\b|Toast' crates native; then
+            echo "A forbidden input or notification implementation is present." >&2
             exit 1
           fi
-          if ! strings build/bin/STT.exe | grep -q '\[ffmpeg\] libav convert'; then
-            echo "GUI binary does not contain libav FFmpeg implementation marker" >&2
+          if grep -R -n -E 'rename[[:space:]]*=[[:space:]]*"NOTIFICATION"' crates; then
+            echo "The removed NOTIFICATION field is serialized." >&2
+            exit 1
+          fi
+          x86_64-w64-mingw32-objdump -x dist/gui/STT.exe | grep 'keybd_event'
+          if x86_64-w64-mingw32-objdump -x dist/gui/STT.exe | grep 'SendInput'; then
+            echo "GUI imports SendInput." >&2
+            exit 1
+          fi
+          if strings dist/gui/STT.exe | grep '\[ffmpeg\] executing: ffmpeg'; then
+            echo "GUI contains the external FFmpeg backend." >&2
+            exit 1
+          fi
+          strings dist/gui/STT.exe | grep '\[ffmpeg\] libav convert'
+          strings dist/cli/stt.exe | grep '\[ffmpeg\] executing: ffmpeg'
+          imports="$(x86_64-w64-mingw32-objdump -p dist/gui/STT.exe | grep 'DLL Name')"
+          echo "$imports"
+          if echo "$imports" | grep -E -i 'avcodec|avformat|avutil|swresample|portaudio'; then
+            echo "GUI has a dynamic PortAudio or libav dependency." >&2
             exit 1
           fi
 
-      - name: Package GUI
-        run: |
-          mkdir -p dist/gui-package
-          cp GUI/build/bin/STT.exe dist/gui-package/
-          cp README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt dist/gui-package/
-          cp -R THIRD_PARTY_LICENSES dist/gui-package/
-          cd dist/gui-package
-          python3 -m zipfile -c ../stt-gui-windows-amd64.zip STT.exe README.md LICENSE NOTICE THIRD_PARTY_NOTICES.txt THIRD_PARTY_LICENSES/*
-          cd ../..
-          sha256sum dist/stt-gui-windows-amd64.zip > dist/stt-gui-windows-amd64.zip.sha256
+      - name: Package releases
+        run: scripts/package-windows-release.sh
 
       - name: Move Latest tag
         run: |
@@ -181,8 +133,8 @@ jobs:
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
-          notes="Automated build from ${GITHUB_REF_NAME} at ${GITHUB_SHA}."
-          if gh release view Latest >/dev/null 2>&1; then
+          notes="Automated Rust build from ${GITHUB_REF_NAME} at ${GITHUB_SHA}."
+          if gh release view Latest; then
             gh release edit Latest --title "Latest" --notes "$notes"
           else
             gh release create Latest --title "Latest" --notes "$notes"

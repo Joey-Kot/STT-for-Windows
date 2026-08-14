@@ -28,12 +28,14 @@ include their complete license texts in `THIRD_PARTY_LICENSES/`.
 - opencore-amr 0.1.6 — Apache-2.0;
   `THIRD_PARTY_LICENSES/opencore-amr-Apache-2.0.txt`
 
-## Wails
+## Rust crates
 
-- Version: 2.10.2
-- Source: https://github.com/wailsapp/wails
-- License: MIT
-- Full license text: `THIRD_PARTY_LICENSES/Wails-MIT.txt`
+The application uses permissively licensed crates including `clap`, `serde`,
+`serde_json`, `reqwest`, `tokio`, `tokio-util`, `windows`, `thiserror`, `uuid`,
+`hound`, `chrono`, `parking_lot`, `async-trait`, and their transitive
+dependencies. Exact versions are locked in `Cargo.lock`. Release source
+archives retain crate license metadata; generated binary packages continue to
+include this notice and the project license.
 
 ## Project License
 
