@@ -1,18 +1,26 @@
 use std::collections::HashMap;
 use std::ffi::c_void;
+use std::fs;
 use std::mem::size_of;
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
+use std::time::{SystemTime, UNIX_EPOCH};
 
+use base64::Engine;
+use base64::engine::general_purpose::STANDARD;
 use stt_core::Config;
+use stt_core::asr::AsrClient;
+use stt_core::converter::AudioConverter;
 use stt_core::runtime::{Event, Runtime};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
     BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateSolidBrush,
     DC_BRUSH, DC_PEN, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DeleteObject, DrawTextW, EndPaint, FF_DONTCARE,
-    FW_BOLD, FW_NORMAL, FillRect, GetStockObject, HBRUSH, HDC, HFONT, HGDIOBJ, InvalidateRect,
-    LineTo, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, RoundRect, ScreenToClient,
-    SelectObject, SetBkColor, SetBkMode, SetDCBrushColor, SetDCPenColor, SetTextColor, TRANSPARENT,
+    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint,
+    FF_DONTCARE, FW_BOLD, FW_NORMAL, FillRect, GetStockObject, HBRUSH, HDC, HFONT, HGDIOBJ,
+    InvalidateRect, LineTo, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, RoundRect,
+    ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetDCBrushColor, SetDCPenColor,
+    SetTextColor, TRANSPARENT,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
@@ -44,11 +52,13 @@ const ID_SAVE: usize = 0x6101;
 const ID_CANCEL: usize = 0x6102;
 const ID_LANGUAGE: usize = 0x6103;
 const ID_CLOSE: usize = 0x6104;
+const ID_TEST_CONNECTIVITY: usize = 0x6105;
 const ID_PAGE_BASE: usize = 0x6110;
 const ID_LANGUAGE_ITEM_BASE: usize = 0x6180;
 const ID_FIELD_BASE: usize = 0x6200;
 const WM_SAVE_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 21;
 pub const WM_LANGUAGE_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 22;
+const WM_CONNECTIVITY_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 23;
 
 const WINDOW_WIDTH: i32 = 760;
 const WINDOW_HEIGHT: i32 = 620;
@@ -62,6 +72,8 @@ const EDIT_WIDTH: i32 = 378;
 const FIELD_TOP: i32 = 94;
 const FIELD_HEIGHT: i32 = 34;
 const SS_CENTERIMAGE_STYLE: u32 = 0x0000_0200;
+const CONNECTIVITY_TEST_SAMPLE_RATE: i32 = 16_000;
+const CONNECTIVITY_TEST_PCM: &str = include_str!("../../../scripts/connectivity_test.pcm.b64");
 
 const GROUPS: &[(&str, &str)] = &[
     ("Display", "display"),
@@ -287,6 +299,7 @@ struct SettingsState {
     controls: HashMap<&'static str, HWND>,
     config_path: std::path::PathBuf,
     saving: bool,
+    connectivity_status: ConnectivityStatus,
     language: Language,
     language_control: HWND,
     language_items: Vec<HWND>,
@@ -304,6 +317,13 @@ struct SettingsState {
     font: HFONT,
     title_font: HFONT,
     small_font: HFONT,
+}
+
+enum ConnectivityStatus {
+    Idle,
+    Testing,
+    Succeeded,
+    Failed(String),
 }
 
 #[derive(Clone, Copy)]
@@ -346,6 +366,7 @@ impl SettingsWindow {
             controls: HashMap::new(),
             config_path: platform::config_path()?,
             saving: false,
+            connectivity_status: ConnectivityStatus::Idle,
             language,
             language_control: HWND::default(),
             language_items: Vec::new(),
@@ -487,6 +508,7 @@ unsafe extern "system" fn settings_proc(
                     ID_CANCEL | ID_CLOSE => unsafe {
                         let _ = DestroyWindow(hwnd);
                     },
+                    ID_TEST_CONNECTIVITY => test_connectivity(state),
                     _ => {}
                 }
             }
@@ -550,6 +572,29 @@ unsafe extern "system" fn settings_proc(
                     let _ = DestroyWindow(hwnd);
                 },
                 Err(error) => show_error(hwnd, &error),
+            }
+            LRESULT(0)
+        }
+        WM_CONNECTIVITY_RESULT => {
+            let result = unsafe { Box::from_raw(lparam.0 as *mut Result<(), String>) };
+            state.connectivity_status = match *result {
+                Ok(()) => ConnectivityStatus::Succeeded,
+                Err(error) => ConnectivityStatus::Failed(error),
+            };
+            if let Some(button) = state.controls.get("__test_connectivity") {
+                unsafe {
+                    if !state.saving {
+                        let _ = EnableWindow(*button, true);
+                    }
+                    let _ = SetWindowTextW(
+                        *button,
+                        PCWSTR(wide(state.language.text("test_connectivity")).as_ptr()),
+                    );
+                    let _ = InvalidateRect(Some(*button), None, true);
+                }
+            }
+            unsafe {
+                let _ = InvalidateRect(Some(hwnd), None, true);
             }
             LRESULT(0)
         }
@@ -751,6 +796,29 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
             },
         );
     }
+
+    let api_test_top = group_y.get("API").copied().unwrap_or(FIELD_TOP);
+    let test_connectivity = create_child(
+        state,
+        w!("BUTTON"),
+        state.language.text("test_connectivity"),
+        WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW as u32),
+        EDIT_LEFT,
+        api_test_top,
+        142,
+        FIELD_HEIGHT,
+        ID_TEST_CONNECTIVITY,
+        instance,
+    )?;
+    state
+        .controls
+        .insert("__test_connectivity", test_connectivity);
+    state
+        .control_groups
+        .insert(test_connectivity.0 as usize, "API");
+    state
+        .localized_controls
+        .push((test_connectivity, "test_connectivity"));
 
     let cancel = create_child(
         state,
@@ -979,6 +1047,9 @@ fn paint_window(state: &SettingsState) {
         }
         if active == "About" {
             paint_about(state, hdc);
+        }
+        if active == "API" {
+            paint_connectivity_status(state, hdc);
         }
         SelectObject(hdc, old);
         let _ = EndPaint(state.hwnd, &paint);
@@ -1209,6 +1280,29 @@ fn draw_owner_button(state: &SettingsState, item: &DRAWITEMSTRUCT) {
                     rgb(92, 105, 109)
                 } else {
                     rgb(215, 226, 228)
+                },
+                7,
+            )
+        } else if id == ID_TEST_CONNECTIVITY {
+            (
+                if disabled {
+                    rgb(29, 39, 43)
+                } else if pressed {
+                    rgb(33, 61, 61)
+                } else {
+                    rgb(16, 22, 25)
+                },
+                if disabled {
+                    rgb(48, 61, 66)
+                } else if focused || hot {
+                    rgb(82, 192, 176)
+                } else {
+                    rgb(56, 84, 86)
+                },
+                if disabled {
+                    rgb(107, 123, 126)
+                } else {
+                    rgb(226, 239, 239)
                 },
                 7,
             )
@@ -1466,6 +1560,86 @@ unsafe fn paint_about(state: &SettingsState, hdc: HDC) {
     }
 }
 
+unsafe fn paint_connectivity_status(state: &SettingsState, hdc: HDC) {
+    let s = |value| platform::scale(value, state.dpi);
+    match &state.connectivity_status {
+        ConnectivityStatus::Idle | ConnectivityStatus::Testing => {}
+        ConnectivityStatus::Succeeded => unsafe {
+            let icon = RECT {
+                left: s(EDIT_LEFT),
+                top: s(514),
+                right: s(EDIT_LEFT + 20),
+                bottom: s(534),
+            };
+            rounded_box(hdc, icon, rgb(104, 201, 88), rgb(104, 201, 88), s(10));
+            let center_x = (icon.left + icon.right) / 2;
+            let center_y = (icon.top + icon.bottom) / 2;
+            stroke_polyline(
+                hdc,
+                &[
+                    POINT {
+                        x: center_x - s(5),
+                        y: center_y,
+                    },
+                    POINT {
+                        x: center_x - s(1),
+                        y: center_y + s(4),
+                    },
+                    POINT {
+                        x: center_x + s(6),
+                        y: center_y - s(5),
+                    },
+                ],
+                rgb(8, 49, 35),
+                s(2).max(1),
+            );
+            draw_text_line(
+                hdc,
+                state.font,
+                state.language.text("connectivity_success"),
+                rgb(108, 207, 94),
+                RECT {
+                    left: s(EDIT_LEFT + 30),
+                    top: s(507),
+                    right: s(EDIT_LEFT + EDIT_WIDTH),
+                    bottom: s(541),
+                },
+                DT_LEFT,
+            );
+        },
+        ConnectivityStatus::Failed(error) => unsafe {
+            let card = RECT {
+                left: s(EDIT_LEFT),
+                top: s(506),
+                right: s(EDIT_LEFT + EDIT_WIDTH),
+                bottom: s(554),
+            };
+            rounded_box(hdc, card, rgb(47, 27, 30), rgb(226, 67, 74), s(7));
+            let icon = RECT {
+                left: s(EDIT_LEFT + 11),
+                top: s(519),
+                right: s(EDIT_LEFT + 31),
+                bottom: s(539),
+            };
+            rounded_box(hdc, icon, rgb(239, 86, 91), rgb(239, 86, 91), s(4));
+            draw_text_line(hdc, state.title_font, "!", rgb(41, 22, 24), icon, DT_CENTER);
+            let message = format!("{}{}", state.language.text("connectivity_failed"), error);
+            draw_text_wrapped(
+                hdc,
+                state.small_font,
+                &message,
+                rgb(255, 112, 116),
+                RECT {
+                    left: s(EDIT_LEFT + 42),
+                    top: s(512),
+                    right: s(EDIT_LEFT + EDIT_WIDTH - 10),
+                    bottom: s(548),
+                },
+            );
+        },
+    }
+}
+
 fn refresh_language(state: &SettingsState) {
     unsafe {
         let _ = SetWindowTextW(
@@ -1566,6 +1740,135 @@ fn select_language(state: &mut SettingsState, index: usize) {
             LPARAM(0),
         );
     }
+}
+
+fn test_connectivity(state: &mut SettingsState) {
+    if matches!(state.connectivity_status, ConnectivityStatus::Testing) {
+        return;
+    }
+    let config = match read_config(state).and_then(|config| {
+        config.validate().map_err(|error| error.to_string())?;
+        Ok(config)
+    }) {
+        Ok(config) => config,
+        Err(error) => {
+            state.connectivity_status = ConnectivityStatus::Failed(error);
+            unsafe {
+                let _ = InvalidateRect(Some(state.hwnd), None, true);
+            }
+            return;
+        }
+    };
+
+    state.connectivity_status = ConnectivityStatus::Testing;
+    if let Some(button) = state.controls.get("__test_connectivity") {
+        unsafe {
+            let _ = EnableWindow(*button, false);
+            let _ = SetWindowTextW(
+                *button,
+                PCWSTR(wide(state.language.text("testing_connectivity")).as_ptr()),
+            );
+            let _ = InvalidateRect(Some(*button), None, true);
+        }
+    }
+    let hwnd = state.hwnd.0 as usize;
+    std::thread::spawn(move || {
+        let result = (|| -> Result<(), String> {
+            let async_runtime = tokio::runtime::Builder::new_current_thread()
+                .enable_all()
+                .build()
+                .map_err(|error| error.to_string())?;
+            async_runtime.block_on(run_connectivity_test(config))
+        })();
+        let pointer = Box::into_raw(Box::new(result));
+        let hwnd = HWND(hwnd as *mut c_void);
+        if unsafe {
+            PostMessageW(
+                Some(hwnd),
+                WM_CONNECTIVITY_RESULT,
+                WPARAM(0),
+                LPARAM(pointer as isize),
+            )
+        }
+        .is_err()
+        {
+            unsafe {
+                drop(Box::from_raw(pointer));
+            }
+        }
+    });
+}
+
+async fn run_connectivity_test(config: Config) -> Result<(), String> {
+    let client = AsrClient::new(config.clone()).map_err(|error| error.to_string())?;
+    if config.api_endpoint.is_empty() {
+        return Err("API endpoint is empty".into());
+    }
+    let (input, output) = connectivity_test_paths(&config.container_extension());
+    let result = async {
+        write_connectivity_test_wav(&input)?;
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        platform::GuiLibAvConverter
+            .convert(
+                &cancellation,
+                &config,
+                &input,
+                &output,
+                CONNECTIVITY_TEST_SAMPLE_RATE,
+            )
+            .await
+            .map_err(|error| error.to_string())?;
+        client
+            .test_connection(&output)
+            .await
+            .map_err(|error| error.to_string())
+    }
+    .await;
+    let _ = fs::remove_file(&input);
+    let _ = fs::remove_file(&output);
+    result
+}
+
+fn connectivity_test_paths(extension: &str) -> (PathBuf, PathBuf) {
+    let timestamp = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let stem = format!("stt-connectivity-{}-{timestamp}", std::process::id());
+    let directory = std::env::temp_dir();
+    (
+        directory.join(format!("{stem}-source.wav")),
+        directory.join(format!("{stem}-converted.{extension}")),
+    )
+}
+
+fn write_connectivity_test_wav(path: &Path) -> Result<(), String> {
+    let encoded: String = CONNECTIVITY_TEST_PCM
+        .chars()
+        .filter(|character| !character.is_ascii_whitespace())
+        .collect();
+    let pcm = STANDARD
+        .decode(encoded)
+        .map_err(|error| format!("failed to decode embedded connectivity test audio: {error}"))?;
+    let data_size = u32::try_from(pcm.len())
+        .map_err(|_| "embedded connectivity test audio is too large".to_string())?;
+    let byte_rate = CONNECTIVITY_TEST_SAMPLE_RATE as u32 * 2;
+    let mut wav = Vec::with_capacity(pcm.len() + 44);
+    wav.extend_from_slice(b"RIFF");
+    wav.extend_from_slice(&(36 + data_size).to_le_bytes());
+    wav.extend_from_slice(b"WAVEfmt ");
+    wav.extend_from_slice(&16_u32.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&1_u16.to_le_bytes());
+    wav.extend_from_slice(&(CONNECTIVITY_TEST_SAMPLE_RATE as u32).to_le_bytes());
+    wav.extend_from_slice(&byte_rate.to_le_bytes());
+    wav.extend_from_slice(&2_u16.to_le_bytes());
+    wav.extend_from_slice(&16_u16.to_le_bytes());
+    wav.extend_from_slice(b"data");
+    wav.extend_from_slice(&data_size.to_le_bytes());
+    wav.extend_from_slice(&pcm);
+    fs::write(path, wav)
+        .map_err(|error| format!("failed to create connectivity test audio: {error}"))
 }
 
 fn save(state: &mut SettingsState) {
@@ -1792,6 +2095,22 @@ unsafe fn draw_text_line(
             &mut text,
             &mut rect,
             alignment | DT_SINGLELINE | DT_VCENTER | DT_NOPREFIX | DT_END_ELLIPSIS,
+        );
+        SelectObject(hdc, old);
+    }
+}
+
+unsafe fn draw_text_wrapped(hdc: HDC, font: HFONT, text: &str, color: COLORREF, mut rect: RECT) {
+    let mut text = text.encode_utf16().collect::<Vec<_>>();
+    unsafe {
+        let old = SelectObject(hdc, HGDIOBJ(font.0));
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, color);
+        DrawTextW(
+            hdc,
+            &mut text,
+            &mut rect,
+            DT_LEFT | DT_WORDBREAK | DT_VCENTER | DT_NOPREFIX,
         );
         SelectObject(hdc, old);
     }

@@ -27,7 +27,7 @@ pub enum AsrError {
     EmptyEndpoint,
     #[error("invalid extra-config JSON: {0}")]
     InvalidExtraConfig(#[from] serde_json::Error),
-    #[error("failed to build HTTP client: {0}")]
+    #[error("{0}")]
     Client(#[source] reqwest::Error),
     #[error("{0}")]
     Attempt(String),
@@ -134,6 +134,26 @@ impl AsrClient {
             }
             delay *= 2.0;
         }
+    }
+
+    /// Sends one transcription request without retrying. This is used by the
+    /// settings dialog to verify the endpoint and credentials while preserving
+    /// the exact transport or HTTP error for the user.
+    pub async fn test_connection(&self, file_path: &Path) -> Result<(), AsrError> {
+        if self.config.api_endpoint.is_empty() {
+            return Err(AsrError::EmptyEndpoint);
+        }
+        let cancellation = CancellationToken::new();
+        let response = self.send_request(&cancellation, file_path).await?;
+        let status = response.status();
+        if status == StatusCode::OK {
+            return Ok(());
+        }
+        let response = response.bytes().await.map_err(AsrError::Client)?;
+        Err(AsrError::Attempt(format!(
+            "HTTP {status}: {}",
+            format_response(&response)
+        )))
     }
 
     async fn upload_once(
@@ -300,5 +320,18 @@ mod tests {
         assert_eq!(format_response(&[0xff, 0]), "<binary 2 bytes, hex: ff00>");
         let unicode = format!("{}é", "a".repeat(999));
         assert!(format_response(unicode.as_bytes()).starts_with(&"a".repeat(999)));
+    }
+
+    #[test]
+    fn connection_failures_keep_the_http_response() {
+        let error = AsrError::Attempt(format!(
+            "HTTP {}: {}",
+            StatusCode::UNAUTHORIZED,
+            format_response(br#"{"error":"invalid API key"}"#)
+        ));
+        assert_eq!(
+            error.to_string(),
+            r#"HTTP 401 Unauthorized: {"error":"invalid API key"}"#
+        );
     }
 }

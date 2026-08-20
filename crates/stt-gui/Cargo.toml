@@ -20,6 +20,7 @@ static-libav = []
 
 [dependencies]
 async-trait.workspace = true
+base64.workspace = true
 parking_lot.workspace = true
 serde_json.workspace = true
 stt-core = { path = "../stt-core" }
