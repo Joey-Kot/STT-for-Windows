@@ -1,5 +1,5 @@
 use windows::Win32::UI::WindowsAndMessaging::{
-    HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LR_SHARED, LoadIconW, LoadImageW,
+    HICON, IDI_APPLICATION, IMAGE_ICON, LR_DEFAULTCOLOR, LoadIconW, LoadImageW,
 };
 use windows::core::PCWSTR;
 
@@ -26,9 +26,8 @@ pub fn load_app_icon_sized(width: i32, height: i32) -> windows::core::Result<HIC
             IMAGE_ICON,
             width,
             height,
-            LR_DEFAULTCOLOR | LR_SHARED,
+            LR_DEFAULTCOLOR,
         )
         .map(|handle| HICON(handle.0))
-        .or_else(|_| load_app_icon())
     }
 }

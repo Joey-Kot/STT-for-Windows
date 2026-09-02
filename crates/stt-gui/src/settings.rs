@@ -30,12 +30,12 @@ use windows::Win32::UI::Controls::{
 use windows::Win32::UI::Input::KeyboardAndMouse::{EnableWindow, GetFocus};
 use windows::Win32::UI::WindowsAndMessaging::{
     BN_CLICKED, BS_OWNERDRAW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DI_NORMAL,
-    DefWindowProcW, DestroyWindow, DrawIconEx, EC_LEFTMARGIN, EC_RIGHTMARGIN, EN_KILLFOCUS,
-    EN_SETFOCUS, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_PASSWORD, ES_WANTRETURN,
-    GWLP_USERDATA, GetClientRect, GetMessagePos, GetWindowLongPtrW, GetWindowTextLengthW,
-    GetWindowTextW, HCURSOR, HMENU, HTCAPTION, HTCLIENT, HWND_TOP, IDC_ARROW, LoadCursorW,
-    MB_ICONERROR, MB_OK, MessageBoxW, PostMessageW, RegisterClassExW, SW_HIDE, SW_SHOW,
-    SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageW, SetWindowLongPtrW, SetWindowPos,
+    DefWindowProcW, DestroyIcon, DestroyWindow, DrawIconEx, EC_LEFTMARGIN, EC_RIGHTMARGIN,
+    EN_KILLFOCUS, EN_SETFOCUS, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_PASSWORD,
+    ES_WANTRETURN, GWLP_USERDATA, GetClientRect, GetMessagePos, GetWindowLongPtrW,
+    GetWindowTextLengthW, GetWindowTextW, HCURSOR, HMENU, HTCAPTION, HTCLIENT, HWND_TOP, IDC_ARROW,
+    LoadCursorW, MB_ICONERROR, MB_OK, MessageBoxW, PostMessageW, RegisterClassExW, SW_HIDE,
+    SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageW, SetWindowLongPtrW, SetWindowPos,
     SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
     WM_CTLCOLORBTN, WM_CTLCOLORDLG, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
     WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_NCCREATE,
@@ -1460,6 +1460,7 @@ unsafe fn paint_about(state: &SettingsState, hdc: HDC) {
     unsafe {
         if let Ok(icon) = resources::load_app_icon_sized(s(70), s(70)) {
             let _ = DrawIconEx(hdc, s(196), s(96), icon, s(70), s(70), 0, None, DI_NORMAL);
+            let _ = DestroyIcon(icon);
         }
         draw_text_line(
             hdc,
