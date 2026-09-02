@@ -15,13 +15,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowRect, HCURSOR,
-    HWND_TOPMOST, IDC_ARROW, IDOK, KillTimer, LWA_COLORKEY, LoadCursorW, MB_ICONWARNING,
-    MB_OKCANCEL, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW, SW_SHOW,
-    SWP_NOACTIVATE, SWP_NOMOVE, SetLayeredWindowAttributes, SetTimer, SetWindowLongPtrW,
-    SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
-    WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEMOVE, WM_NCCREATE,
-    WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED, WS_EX_TOPMOST, WS_POPUP,
-    WS_VISIBLE,
+    HWND_TOPMOST, IDC_ARROW, IDOK, KillTimer, LWA_COLORKEY, LoadCursorW, MA_NOACTIVATE,
+    MB_ICONWARNING, MB_OKCANCEL, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SetLayeredWindowAttributes, SetTimer,
+    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CLOSE,
+    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
+    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_TIMER,
+    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -156,10 +156,12 @@ fn run_inner() -> Result<(), String> {
     let raw_state = Box::into_raw(state);
     let hwnd = unsafe {
         CreateWindowExW(
-            WINDOW_EX_STYLE(WS_EX_LAYERED.0 | WS_EX_TOPMOST.0),
+            // Keep the control surface interactive without allowing it to steal the foreground
+            // window from the app receiving dictated text.
+            WINDOW_EX_STYLE(WS_EX_LAYERED.0 | WS_EX_TOPMOST.0 | WS_EX_NOACTIVATE.0),
             w!("STTRustNativeWindow"),
             w!("STT"),
-            WS_POPUP | WS_VISIBLE,
+            WS_POPUP,
             windows::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
             windows::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
             platform::scale(FULL_WIDTH, dpi),
@@ -178,7 +180,7 @@ fn run_inner() -> Result<(), String> {
         SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_COLORKEY)
             .map_err(|error| error.to_string())?;
         platform::apply_corner_preference(hwnd, rounded);
-        let _ = ShowWindow(hwnd, SW_SHOW);
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         let _ = taskbar::set_visible(hwnd, true);
     }
     let weak = Arc::downgrade(&runtime);
@@ -249,6 +251,8 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        // Keep mouse actions (click, drag, and hover) working without making the overlay active.
+        WM_MOUSEACTIVATE => LRESULT(MA_NOACTIVATE as isize),
         WM_PAINT => {
             let mut paint = PAINTSTRUCT::default();
             unsafe {
@@ -399,18 +403,11 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_RBUTTONUP if state.minimal => {
-            if let Some(tray) = &state.tray {
-                tray.show_menu(state.minimal, state.language);
-            }
+            show_tray_menu(state);
             LRESULT(0)
         }
         WM_COMMAND => {
-            match wparam.0 & 0xffff {
-                COMMAND_MINIMAL => set_minimal(state, !state.minimal),
-                COMMAND_SETTINGS => open_settings(state),
-                COMMAND_QUIT => request_quit(state),
-                _ => {}
-            }
+            handle_command(state, wparam.0 & 0xffff);
             LRESULT(0)
         }
         WM_TRAY => {
@@ -418,9 +415,7 @@ unsafe extern "system" fn window_proc(
             if event == windows::Win32::UI::WindowsAndMessaging::WM_CONTEXTMENU
                 || event == windows::Win32::UI::WindowsAndMessaging::WM_RBUTTONUP
             {
-                if let Some(tray) = &state.tray {
-                    tray.show_menu(state.minimal, state.language);
-                }
+                show_tray_menu(state);
             } else if event == windows::Win32::UI::WindowsAndMessaging::WM_LBUTTONDBLCLK {
                 set_minimal(state, false);
             }
@@ -485,6 +480,25 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+fn show_tray_menu(state: &mut WindowState) {
+    let command = state
+        .tray
+        .as_ref()
+        .and_then(|tray| tray.show_menu(state.minimal, state.language));
+    if let Some(command) = command {
+        handle_command(state, command);
+    }
+}
+
+fn handle_command(state: &mut WindowState, command: usize) {
+    match command {
+        COMMAND_MINIMAL => set_minimal(state, !state.minimal),
+        COMMAND_SETTINGS => open_settings(state),
+        COMMAND_QUIT => request_quit(state),
+        _ => {}
     }
 }
 

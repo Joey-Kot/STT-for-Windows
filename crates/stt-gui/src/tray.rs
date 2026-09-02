@@ -7,8 +7,9 @@ use windows::Win32::UI::Shell::{
     NOTIFYICONDATAW, Shell_NotifyIconW,
 };
 use windows::Win32::UI::WindowsAndMessaging::{
-    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, MF_CHECKED, MF_STRING, MF_UNCHECKED,
-    SetForegroundWindow, TPM_LEFTALIGN, TPM_RIGHTBUTTON, TrackPopupMenu,
+    AppendMenuW, CreatePopupMenu, DestroyMenu, GetCursorPos, GetForegroundWindow, MF_CHECKED,
+    MF_STRING, MF_UNCHECKED, SetForegroundWindow, TPM_LEFTALIGN, TPM_RETURNCMD, TPM_RIGHTBUTTON,
+    TrackPopupMenu,
 };
 
 use crate::resources;
@@ -45,10 +46,10 @@ impl TrayIcon {
         Ok(Self { data })
     }
 
-    pub fn show_menu(&self, minimal: bool, language: Language) {
+    pub fn show_menu(&self, minimal: bool, language: Language) -> Option<usize> {
         unsafe {
             let Ok(menu) = CreatePopupMenu() else {
-                return;
+                return None;
             };
             let minimal_flags = MF_STRING | if minimal { MF_CHECKED } else { MF_UNCHECKED };
             let minimal_text = wide(language.text("minimal"));
@@ -74,17 +75,25 @@ impl TrayIcon {
             );
             let mut point = POINT::default();
             let _ = GetCursorPos(&mut point);
+            let previous_foreground = GetForegroundWindow();
             let _ = SetForegroundWindow(self.data.hWnd);
-            let _ = TrackPopupMenu(
+            // Receive the command only after the menu closes, so focus can be restored before
+            // any command opens a window or changes the floating overlay.
+            let command = TrackPopupMenu(
                 menu,
-                TPM_LEFTALIGN | TPM_RIGHTBUTTON,
+                TPM_LEFTALIGN | TPM_RETURNCMD | TPM_RIGHTBUTTON,
                 point.x,
                 point.y,
                 None,
                 self.data.hWnd,
                 None,
-            );
+            )
+            .0 as usize;
             let _ = DestroyMenu(menu);
+            if !previous_foreground.is_invalid() && previous_foreground != self.data.hWnd {
+                let _ = SetForegroundWindow(previous_foreground);
+            }
+            (command != 0).then_some(command)
         }
     }
 }
