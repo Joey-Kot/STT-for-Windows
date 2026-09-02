@@ -1,7 +1,7 @@
 use windows::Win32::Foundation::{HWND, RECT};
 use windows::Win32::Graphics::Direct2D::Common::{
     D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F,
-    D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_PIXEL_FORMAT,
+    D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL,
@@ -10,8 +10,9 @@ use windows::Win32::Graphics::Direct2D::{
     D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_LINE_JOIN_ROUND, D2D1_PRESENT_OPTIONS_NONE,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
     D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, D2D1_SWEEP_DIRECTION_CLOCKWISE,
-    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1CreateFactory, ID2D1Factory, ID2D1GeometrySink,
-    ID2D1HwndRenderTarget, ID2D1PathGeometry, ID2D1SolidColorBrush, ID2D1StrokeStyle,
+    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1CreateFactory, ID2D1Brush, ID2D1Factory,
+    ID2D1GeometrySink, ID2D1HwndRenderTarget, ID2D1PathGeometry, ID2D1SolidColorBrush,
+    ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
@@ -39,6 +40,7 @@ pub struct Renderer {
     text_format: IDWriteTextFormat,
     stroke_style: ID2D1StrokeStyle,
     gear_geometry: ID2D1PathGeometry,
+    retry_geometry: ID2D1PathGeometry,
     dpi: u32,
 }
 
@@ -71,12 +73,14 @@ impl Renderer {
                 None,
             )?;
             let gear_geometry = create_gear_geometry(&factory)?;
+            let retry_geometry = create_retry_geometry(&factory)?;
             Ok(Self {
                 factory,
                 target: None,
                 text_format,
                 stroke_style,
                 gear_geometry,
+                retry_geometry,
                 dpi: 96,
             })
         }
@@ -234,6 +238,7 @@ impl Renderer {
                     target,
                     &self.stroke_style,
                     &self.gear_geometry,
+                    &self.retry_geometry,
                     index,
                     rect,
                     brush,
@@ -380,6 +385,7 @@ unsafe fn draw_icon(
     target: &ID2D1HwndRenderTarget,
     stroke_style: &ID2D1StrokeStyle,
     gear_geometry: &ID2D1PathGeometry,
+    retry_geometry: &ID2D1PathGeometry,
     index: i32,
     rect: D2D_RECT_F,
     brush: &ID2D1SolidColorBrush,
@@ -441,7 +447,7 @@ unsafe fn draw_icon(
                     cy + 5.25,
                 );
             }
-            2 if retry_button => draw_retry_icon(target, stroke_style, cx, cy, brush),
+            2 if retry_button => draw_retry_icon(target, retry_geometry, cx, cy, brush),
             2 => {
                 draw_line(
                     target,
@@ -496,48 +502,66 @@ unsafe fn draw_icon(
 
 unsafe fn draw_retry_icon(
     target: &ID2D1HwndRenderTarget,
-    stroke_style: &ID2D1StrokeStyle,
+    geometry: &ID2D1PathGeometry,
     cx: f32,
     cy: f32,
     brush: &ID2D1SolidColorBrush,
 ) {
-    const START_ANGLE: f32 = 0.55;
-    const SWEEP_ANGLE: f32 = std::f32::consts::TAU - 1.1;
-    const STEPS: usize = 18;
-    const RADIUS: f32 = 5.0;
+    const VIEWBOX_SIZE: f32 = 1024.0;
+    const ICON_SIZE: f32 = 18.0;
 
-    let mut previous = v(
-        cx + RADIUS * START_ANGLE.cos(),
-        cy + RADIUS * START_ANGLE.sin(),
-    );
-    for step in 1..=STEPS {
-        let angle = START_ANGLE + SWEEP_ANGLE * step as f32 / STEPS as f32;
-        let point = v(cx + RADIUS * angle.cos(), cy + RADIUS * angle.sin());
-        unsafe { target.DrawLine(previous, point, brush, 1.5, stroke_style) };
-        previous = point;
-    }
-
+    let scale = ICON_SIZE / VIEWBOX_SIZE;
     unsafe {
-        draw_line(
-            target,
-            stroke_style,
-            brush,
-            1.5,
-            previous.X,
-            previous.Y,
-            previous.X - 4.25,
-            previous.Y + 0.25,
+        let mut original = Matrix3x2::default();
+        target.GetTransform(&mut original);
+        target.SetTransform(&Matrix3x2 {
+            M11: scale,
+            M12: 0.0,
+            M21: 0.0,
+            M22: scale,
+            M31: cx - ICON_SIZE / 2.0,
+            M32: cy - ICON_SIZE / 2.0,
+        });
+        let _ = target.FillGeometry(geometry, brush, None::<&ID2D1Brush>);
+        target.SetTransform(&original);
+    }
+}
+
+fn create_retry_geometry(factory: &ID2D1Factory) -> windows::core::Result<ID2D1PathGeometry> {
+    // This uses the supplied SVG's 1024 × 1024 viewBox coordinates so its
+    // two solid, opposing arrows retain their original proportions.
+    unsafe {
+        let geometry = factory.CreatePathGeometry()?;
+        let sink = geometry.Open()?;
+
+        sink.BeginFigure(v(177.724_63, 124.579_94), D2D1_FIGURE_BEGIN_FILLED);
+        let mut point = v(177.724_63, 124.579_94);
+        path_arc_absolute(
+            &sink, &mut point, 511.832_12, 511.832_12, false, true, 931.448_6, 805.623_8,
         );
-        draw_line(
-            target,
-            stroke_style,
-            brush,
-            1.5,
-            previous.X,
-            previous.Y,
-            previous.X - 0.25,
-            previous.Y + 4.25,
+        path_line_absolute(&sink, &mut point, 768.071_8, 511.729_77);
+        path_line_absolute(&sink, &mut point, 921.723_8, 511.729_77);
+        path_arc_absolute(
+            &sink, &mut point, 409.465_7, 409.465_7, false, false, 228.703_11, 216.300_25,
         );
+        path_line_absolute(&sink, &mut point, 177.724_63, 124.477_57);
+        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+
+        sink.BeginFigure(v(846.791_56, 899.186_65), D2D1_FIGURE_BEGIN_FILLED);
+        point = v(846.791_56, 899.186_65);
+        path_arc_absolute(
+            &sink, &mut point, 511.832_12, 511.832_12, false, true, 92.965_23, 218.040_48,
+        );
+        path_line_absolute(&sink, &mut point, 256.444_4, 511.832_12);
+        path_line_absolute(&sink, &mut point, 102.792_41, 511.832_12);
+        path_arc_absolute(
+            &sink, &mut point, 409.465_7, 409.465_7, false, false, 795.813_1, 807.261_6,
+        );
+        path_line_absolute(&sink, &mut point, 846.791_56, 899.186_65);
+        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+
+        sink.Close()?;
+        Ok(geometry)
     }
 }
 
