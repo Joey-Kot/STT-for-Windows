@@ -1,3 +1,4 @@
+use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Weak};
 use std::time::{Duration, Instant};
@@ -19,6 +20,7 @@ use crate::recorder::{Recorder, RecorderError, RecorderState, RecordingResult};
 
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_millis(250);
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(5);
+const MAX_RETRY_AUDIO_BYTES: u64 = 100_000_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 pub enum State {
@@ -41,6 +43,8 @@ pub struct Event {
     pub message: String,
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub error: String,
+    #[serde(default)]
+    pub retry_available: bool,
 }
 
 impl Default for Event {
@@ -49,6 +53,7 @@ impl Default for Event {
             state: State::Idle,
             message: String::new(),
             error: String::new(),
+            retry_available: false,
         }
     }
 }
@@ -98,6 +103,8 @@ struct RuntimeInner {
     next_session: u64,
     active_session: u64,
     active_request_cancellation: Option<CancellationToken>,
+    retry_buffer_enabled: bool,
+    retry_recording: Option<Arc<Vec<u8>>>,
 }
 
 pub struct Runtime {
@@ -139,6 +146,8 @@ impl Runtime {
                 next_session: 0,
                 active_session: 0,
                 active_request_cancellation: None,
+                retry_buffer_enabled: false,
+                retry_recording: None,
             }),
             action_lock: Arc::new(AsyncMutex::new(())),
             lifecycle: CancellationToken::new(),
@@ -160,6 +169,16 @@ impl Runtime {
         self.inner.lock().config.clone()
     }
 
+    /// Enables the bounded, in-memory recording buffer used by the GUI retry control.
+    pub fn enable_retry_buffer(&self) {
+        self.inner.lock().retry_buffer_enabled = true;
+    }
+
+    pub fn has_retryable_recording(&self) -> bool {
+        let inner = self.inner.lock();
+        inner.retry_buffer_enabled && inner.retry_recording.is_some()
+    }
+
     pub fn can_reload(&self) -> bool {
         matches!(self.snapshot().state, State::Idle | State::Error)
     }
@@ -178,6 +197,10 @@ impl Runtime {
 
     pub fn try_cancel(self: &Arc<Self>) -> bool {
         self.try_action(3)
+    }
+
+    pub fn try_retry(self: &Arc<Self>) -> bool {
+        self.try_action(4)
     }
 
     pub async fn handle_action(self: &Arc<Self>, id: i32) -> bool {
@@ -219,6 +242,7 @@ impl Runtime {
             1 => self.toggle_recording_locked().await,
             2 => self.toggle_pause_locked(),
             3 => self.cancel_recording_locked().await,
+            4 => self.retry_recording_locked().await,
             _ => {}
         }
     }
@@ -310,6 +334,7 @@ impl Runtime {
         self.lifecycle.cancel();
         let (recorder, hotkeys, request_cancellation) = {
             let mut inner = self.inner.lock();
+            inner.retry_recording = None;
             (
                 inner.recorder.clone(),
                 inner.hotkeys.take(),
@@ -341,7 +366,7 @@ impl Runtime {
             if let Err(error) = recorder.start(self.lifecycle.child_token()).await {
                 self.clear_recording_session(&recorder, session);
                 if !self.is_stopped() {
-                    self.set_state(State::Error, "Recording start failed", Some(&error));
+                    self.set_retryable_error("Recording start failed", &error);
                 }
                 return;
             }
@@ -371,13 +396,14 @@ impl Runtime {
                     self.set_state(State::Idle, "Recording canceled", None::<&RuntimeError>);
                     return;
                 }
+                self.save_completed_recording_for_retry(&result);
                 let cancellation = self.begin_active_request();
                 self.set_state(
                     State::Uploading,
                     "Uploading ASR request",
                     None::<&RuntimeError>,
                 );
-                self.transcribe_recording(result, &cancellation).await;
+                self.transcribe_recording(result, &cancellation, true).await;
                 self.clear_active_request();
             }
             Err(error) => {
@@ -388,7 +414,7 @@ impl Runtime {
                     self.clear_recording_session(&recorder, session);
                 }
                 if !self.is_stopped() {
-                    self.set_state(State::Error, "Recording stop failed", Some(&error));
+                    self.set_retryable_error("Recording stop failed", &error);
                 }
             }
         }
@@ -471,7 +497,7 @@ impl Runtime {
             }
         };
         if should_report {
-            self.set_state(State::Error, "Recording failed", Some(&error));
+            self.set_retryable_error("Recording failed", &error);
         }
     }
 
@@ -524,23 +550,124 @@ impl Runtime {
                     self.clear_recording_session(&recorder, session);
                 }
                 if !self.is_stopped() {
-                    self.set_state(State::Error, "Cancel failed", Some(&error));
+                    self.set_retryable_error("Cancel failed", &error);
                 }
             }
         }
+    }
+
+    async fn retry_recording_locked(&self) {
+        let (temp_dir, recording) = {
+            let inner = self.inner.lock();
+            if inner.event.state != State::Idle || !inner.retry_buffer_enabled {
+                return;
+            }
+            (inner.temp_dir.clone(), inner.retry_recording.clone())
+        };
+        let Some(recording) = recording else {
+            return;
+        };
+
+        // Enter the cancelable request state before restoring the bounded in-memory WAV. The
+        // restoration can still take noticeable time for a 100 MB recording.
+        let cancellation = self.begin_active_request();
+        self.set_state(
+            State::Uploading,
+            "Retrying ASR request",
+            None::<&RuntimeError>,
+        );
+
+        let wav_path = cache::temporary_output_path(&temp_dir, "wav");
+        let write_cancellation = cancellation.clone();
+        let write_result = tokio::task::spawn_blocking({
+            let wav_path = wav_path.clone();
+            move || {
+                if write_cancellation.is_cancelled() {
+                    return Ok(());
+                }
+                std::fs::write(&wav_path, recording.as_slice())
+            }
+        })
+        .await;
+        if self.is_stopped() {
+            let _ = std::fs::remove_file(&wav_path);
+            self.clear_active_request();
+            return;
+        }
+        if cancellation.is_cancelled() {
+            let _ = std::fs::remove_file(&wav_path);
+            self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>);
+            self.clear_active_request();
+            return;
+        }
+        let write_error = match write_result {
+            Ok(Ok(())) => None,
+            Ok(Err(error)) => Some(error.to_string()),
+            Err(error) => Some(error.to_string()),
+        };
+        if let Some(error) = write_error {
+            // std::fs::write may have created a partial WAV before reporting an error.
+            let _ = std::fs::remove_file(&wav_path);
+            if cancellation.is_cancelled() {
+                self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>);
+            } else {
+                self.set_retryable_error("Retry preparation failed", &error);
+            }
+            self.clear_active_request();
+            return;
+        }
+
+        self.transcribe_recording(
+            RecordingResult {
+                wav_path: Some(wav_path),
+                canceled: false,
+            },
+            &cancellation,
+            false,
+        )
+        .await;
+        self.clear_active_request();
+    }
+
+    fn save_completed_recording_for_retry(&self, result: &RecordingResult) {
+        if result.canceled {
+            return;
+        }
+
+        {
+            let mut inner = self.inner.lock();
+            if !inner.retry_buffer_enabled {
+                return;
+            }
+            // A completed recording always supersedes the old retry task. If it cannot be kept
+            // within the limit, retry is unavailable until another recording completes.
+            inner.retry_recording = None;
+        }
+
+        let recording = result.wav_path.as_deref().and_then(load_retry_recording);
+        let mut inner = self.inner.lock();
+        if !self.is_stopped() && inner.retry_buffer_enabled {
+            inner.retry_recording = recording;
+        }
+    }
+
+    fn set_retryable_error<E: std::fmt::Display + ?Sized>(&self, message: &str, error: &E) {
+        let state = if self.has_retryable_recording() {
+            State::Idle
+        } else {
+            State::Error
+        };
+        self.set_state(state, message, Some(error));
     }
 
     async fn transcribe_recording(
         &self,
         result: RecordingResult,
         cancellation: &CancellationToken,
+        cache_attempt: bool,
     ) {
         let Some(wav_path) = result.wav_path else {
-            self.set_state(
-                State::Error,
-                "Recording failed",
-                Some(&RuntimeError::MissingWav),
-            );
+            self.set_retryable_error("Recording failed", &RuntimeError::MissingWav);
             return;
         };
         let (config, client) = {
@@ -561,23 +688,22 @@ impl Runtime {
             )
             .await
         {
-            let _ = std::fs::remove_file(&wav_path);
-            let _ = std::fs::remove_file(&output_path);
+            clean_up_recording_attempt(&config, false, &wav_path, &output_path, false, &[]);
             if !self.is_stopped() {
                 if cancellation.is_cancelled() || matches!(error, ConvertError::Canceled) {
                     self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>);
                 } else {
-                    self.set_state(State::Error, "FFmpeg conversion failed", Some(&error));
+                    self.set_retryable_error("FFmpeg conversion failed", &error);
                 }
             }
             return;
         }
         if self.is_stopped() {
-            cache::handle_cache(&config, Some(&wav_path), Some(&output_path), false, &[]);
+            clean_up_recording_attempt(&config, cache_attempt, &wav_path, &output_path, false, &[]);
             return;
         }
         if cancellation.is_cancelled() {
-            cache::handle_cache(&config, Some(&wav_path), Some(&output_path), false, &[]);
+            clean_up_recording_attempt(&config, cache_attempt, &wav_path, &output_path, false, &[]);
             self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>);
             return;
         }
@@ -586,25 +712,34 @@ impl Runtime {
         match transcription {
             Ok(transcription) => {
                 if self.is_stopped() {
-                    cache::handle_cache(
+                    clean_up_recording_attempt(
                         &config,
-                        Some(&wav_path),
-                        Some(&output_path),
+                        cache_attempt,
+                        &wav_path,
+                        &output_path,
                         true,
                         &transcription.raw_response,
                     );
                     return;
                 }
                 if cancellation.is_cancelled() {
-                    cache::handle_cache(&config, Some(&wav_path), Some(&output_path), false, &[]);
+                    clean_up_recording_attempt(
+                        &config,
+                        cache_attempt,
+                        &wav_path,
+                        &output_path,
+                        false,
+                        &[],
+                    );
                     self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>);
                     return;
                 }
                 if transcription.text.is_empty() {
-                    cache::handle_cache(
+                    clean_up_recording_attempt(
                         &config,
-                        Some(&wav_path),
-                        Some(&output_path),
+                        cache_attempt,
+                        &wav_path,
+                        &output_path,
                         true,
                         &transcription.raw_response,
                     );
@@ -618,10 +753,11 @@ impl Runtime {
                     clipboard_restore_delay,
                 )
                 .await;
-                cache::handle_cache(
+                clean_up_recording_attempt(
                     &config,
-                    Some(&wav_path),
-                    Some(&output_path),
+                    cache_attempt,
+                    &wav_path,
+                    &output_path,
                     true,
                     &transcription.raw_response,
                 );
@@ -638,20 +774,34 @@ impl Runtime {
                         } else {
                             "Paste failed"
                         };
-                        self.set_state(State::Error, message, Some(&error));
+                        self.set_retryable_error(message, &error);
                     }
                     _ => {}
                 }
             }
             Err(AsrError::Canceled) => {
-                cache::handle_cache(&config, Some(&wav_path), Some(&output_path), false, &[]);
+                clean_up_recording_attempt(
+                    &config,
+                    cache_attempt,
+                    &wav_path,
+                    &output_path,
+                    false,
+                    &[],
+                );
                 if !self.is_stopped() {
                     self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>);
                 }
             }
             Err(error) => {
                 if cancellation.is_cancelled() {
-                    cache::handle_cache(&config, Some(&wav_path), Some(&output_path), false, &[]);
+                    clean_up_recording_attempt(
+                        &config,
+                        cache_attempt,
+                        &wav_path,
+                        &output_path,
+                        false,
+                        &[],
+                    );
                     if !self.is_stopped() {
                         self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>);
                     }
@@ -672,12 +822,19 @@ impl Runtime {
                 {
                     eprintln!("[paste] failed: {paste_error}");
                 }
-                cache::handle_cache(&config, Some(&wav_path), Some(&output_path), false, &raw);
+                clean_up_recording_attempt(
+                    &config,
+                    cache_attempt,
+                    &wav_path,
+                    &output_path,
+                    false,
+                    &raw,
+                );
                 if !self.is_stopped() {
                     if cancellation.is_cancelled() {
                         self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>);
                     } else {
-                        self.set_state(State::Error, "Upload failed", Some(&error));
+                        self.set_retryable_error("Upload failed", &error);
                     }
                 }
             }
@@ -699,6 +856,7 @@ impl Runtime {
                 state,
                 message: message.into(),
                 error: error.map(ToString::to_string).unwrap_or_default(),
+                retry_available: inner.retry_buffer_enabled && inner.retry_recording.is_some(),
             };
             (inner.event.clone(), inner.event_handler.clone())
         };
@@ -794,6 +952,47 @@ fn discard_recording(result: &RecordingResult) {
     }
 }
 
+fn load_retry_recording(path: &Path) -> Option<Arc<Vec<u8>>> {
+    let metadata = std::fs::metadata(path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_RETRY_AUDIO_BYTES {
+        return None;
+    }
+
+    let capacity = usize::try_from(metadata.len()).ok()?;
+    let mut recording = Vec::with_capacity(capacity);
+    let file = std::fs::File::open(path).ok()?;
+    file.take(MAX_RETRY_AUDIO_BYTES.saturating_add(1))
+        .read_to_end(&mut recording)
+        .ok()?;
+    if recording.len() as u64 > MAX_RETRY_AUDIO_BYTES {
+        return None;
+    }
+    Some(Arc::new(recording))
+}
+
+fn clean_up_recording_attempt(
+    config: &Config,
+    cache_attempt: bool,
+    wav_path: &Path,
+    output_path: &Path,
+    upload_succeeded: bool,
+    response: &[u8],
+) {
+    if cache_attempt {
+        cache::handle_cache(
+            config,
+            Some(wav_path),
+            Some(output_path),
+            upload_succeeded,
+            response,
+        );
+        return;
+    }
+
+    let _ = std::fs::remove_file(wav_path);
+    let _ = std::fs::remove_file(output_path);
+}
+
 #[cfg(test)]
 mod tests {
     use async_trait::async_trait;
@@ -860,6 +1059,11 @@ mod tests {
             }),
         )
         .unwrap();
+        runtime.enable_retry_buffer();
+        runtime.save_completed_recording_for_retry(&RecordingResult {
+            wav_path: Some(wav_path.clone()),
+            canceled: false,
+        });
         let task_runtime = runtime.clone();
         let task = tokio::spawn(async move {
             let _guard = task_runtime.action_lock.clone().lock_owned().await;
@@ -876,6 +1080,7 @@ mod tests {
                         canceled: false,
                     },
                     &cancellation,
+                    true,
                 )
                 .await;
             task_runtime.clear_active_request();
@@ -891,9 +1096,187 @@ mod tests {
                 state: State::Idle,
                 message: "Request canceled".into(),
                 error: String::new(),
+                retry_available: true,
             }
         );
         assert!(!wav_path.exists());
+        assert!(runtime.has_retryable_recording());
+    }
+
+    #[tokio::test]
+    async fn retry_buffer_keeps_the_previous_audio_after_recording_cancel_and_drops_oversize() {
+        let directory = tempfile::tempdir().unwrap();
+        let previous = directory.path().join("previous.wav");
+        let canceled = directory.path().join("canceled.wav");
+        let replacement = directory.path().join("replacement.wav");
+        let oversized = directory.path().join("oversized.wav");
+        std::fs::write(&previous, b"previous").unwrap();
+        std::fs::write(&canceled, b"canceled").unwrap();
+        std::fs::write(&replacement, b"replacement").unwrap();
+        std::fs::File::create(&oversized)
+            .unwrap()
+            .set_len(MAX_RETRY_AUDIO_BYTES + 1)
+            .unwrap();
+
+        let runtime = Runtime::new(Config::default(), Arc::new(NoopConverter)).unwrap();
+        runtime.enable_retry_buffer();
+        runtime.save_completed_recording_for_retry(&RecordingResult {
+            wav_path: Some(previous),
+            canceled: false,
+        });
+        assert_eq!(
+            runtime
+                .inner
+                .lock()
+                .retry_recording
+                .as_deref()
+                .map(Vec::as_slice),
+            Some(b"previous".as_slice())
+        );
+
+        runtime.save_completed_recording_for_retry(&RecordingResult {
+            wav_path: Some(canceled),
+            canceled: true,
+        });
+        assert_eq!(
+            runtime
+                .inner
+                .lock()
+                .retry_recording
+                .as_deref()
+                .map(Vec::as_slice),
+            Some(b"previous".as_slice())
+        );
+
+        runtime.save_completed_recording_for_retry(&RecordingResult {
+            wav_path: Some(replacement),
+            canceled: false,
+        });
+        assert_eq!(
+            runtime
+                .inner
+                .lock()
+                .retry_recording
+                .as_deref()
+                .map(Vec::as_slice),
+            Some(b"replacement".as_slice())
+        );
+
+        runtime.save_completed_recording_for_retry(&RecordingResult {
+            wav_path: Some(oversized),
+            canceled: false,
+        });
+        assert!(!runtime.has_retryable_recording());
+        runtime.set_state(State::Idle, "", None::<&RuntimeError>);
+        assert!(!runtime.snapshot().retry_available);
+    }
+
+    #[tokio::test]
+    async fn failed_retry_keeps_the_same_buffer_available() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.wav");
+        std::fs::write(&source, b"retry this recording").unwrap();
+        let config = Config {
+            cache_dir: directory.path().to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        let runtime = Runtime::new(config, Arc::new(NoopConverter)).unwrap();
+        runtime.enable_retry_buffer();
+        runtime.save_completed_recording_for_retry(&RecordingResult {
+            wav_path: Some(source),
+            canceled: false,
+        });
+        runtime.set_state(State::Idle, "", None::<&RuntimeError>);
+
+        runtime.retry_recording_locked().await;
+
+        assert_eq!(runtime.snapshot().state, State::Idle);
+        assert!(runtime.snapshot().retry_available);
+        assert_eq!(
+            runtime
+                .inner
+                .lock()
+                .retry_recording
+                .as_deref()
+                .map(Vec::as_slice),
+            Some(b"retry this recording".as_slice())
+        );
+        assert!(
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("RecordTemp_"))
+        );
+    }
+
+    #[tokio::test]
+    async fn retry_request_cancel_bypasses_the_busy_action_lock_and_keeps_the_buffer() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.wav");
+        std::fs::write(&source, b"retry this recording").unwrap();
+        let started = Arc::new(Barrier::new(2));
+        let config = Config {
+            cache_dir: directory.path().to_string_lossy().into_owned(),
+            ..Config::default()
+        };
+        let runtime = Runtime::new(
+            config,
+            Arc::new(CancelAwareConverter {
+                started: started.clone(),
+            }),
+        )
+        .unwrap();
+        runtime.enable_retry_buffer();
+        runtime.save_completed_recording_for_retry(&RecordingResult {
+            wav_path: Some(source),
+            canceled: false,
+        });
+
+        let task_runtime = runtime.clone();
+        let task = tokio::spawn(async move {
+            let _guard = task_runtime.action_lock.clone().lock_owned().await;
+            task_runtime.retry_recording_locked().await;
+        });
+
+        started.wait().await;
+        assert_eq!(runtime.snapshot().state, State::Uploading);
+        assert!(runtime.try_cancel());
+        task.await.unwrap();
+
+        assert_eq!(runtime.snapshot().state, State::Idle);
+        assert_eq!(runtime.snapshot().message, "Request canceled");
+        assert!(runtime.snapshot().retry_available);
+        assert!(runtime.has_retryable_recording());
+        assert!(
+            std::fs::read_dir(directory.path())
+                .unwrap()
+                .flatten()
+                .all(|entry| !entry
+                    .file_name()
+                    .to_string_lossy()
+                    .starts_with("RecordTemp_"))
+        );
+    }
+
+    #[tokio::test]
+    async fn stopping_runtime_releases_the_retry_buffer() {
+        let directory = tempfile::tempdir().unwrap();
+        let source = directory.path().join("source.wav");
+        std::fs::write(&source, b"retry this recording").unwrap();
+        let runtime = Runtime::new(Config::default(), Arc::new(NoopConverter)).unwrap();
+        runtime.enable_retry_buffer();
+        runtime.save_completed_recording_for_retry(&RecordingResult {
+            wav_path: Some(source),
+            canceled: false,
+        });
+        assert!(runtime.has_retryable_recording());
+
+        runtime.stop();
+
+        assert!(!runtime.has_retryable_recording());
     }
 
     #[tokio::test]

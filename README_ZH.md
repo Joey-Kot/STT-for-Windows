@@ -27,6 +27,9 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
 - **可取消的处理链路**
   - 录音、外部 FFmpeg 转换、HTTP 上传、响应读取、重试等待和剪贴板等待均接入取消机制。
   - GUI 处于 `Uploading` 状态时，取消按钮和取消快捷键仍然可用。
+- **GUI 录音重试**
+  - GUI 空闲且存在可重试录音时，复用取消按钮的位置显示重试。
+  - 仅在进程内保存最近一条已结束录音，大小上限为 100,000,000 字节；退出程序时释放。
 - **自动提取与粘贴**
   - 使用 `TEXT_PATH` 从 JSON 响应中读取文本，支持多层对象和重复数组索引。
   - 暂存原剪贴板文本，发送 `Ctrl+V` 后再尝试恢复。
@@ -74,6 +77,8 @@ flowchart LR
     Recorder --> WAV["PCM 16-bit WAV"]
 
     WAV --> Convert["录音音频转换抽象"]
+    WAV --> RetryBuffer["GUI 重试缓冲<br/>最近一条已结束 WAV，仅内存，≤100 MB"]
+    RetryBuffer -->|重试| Convert
     Convert -->|GUI| LibAv["静态 libav"]
     Convert -->|CLI| FFmpeg["外部 ffmpeg.exe"]
     FilePipeline --> FFmpeg
@@ -117,6 +122,7 @@ sequenceDiagram
     Control->>Runtime: toggle recording
     Runtime->>Recorder: 停止并完成 WAV
     Recorder-->>Runtime: RecordingResult
+    Runtime->>Runtime: 若 WAV ≤100 MB，则保留最近一条于内存
     Runtime->>Runtime: 进入 Uploading
     Runtime->>Converter: 转换到配置的编码与容器
     Converter-->>Runtime: 转码音频
@@ -136,11 +142,16 @@ sequenceDiagram
         Runtime-->>Control: Idle
     else 请求最终失败
         ASR-->>Runtime: 非 200 或网络错误
-        Runtime-->>Control: Error
+        Runtime-->>Control: Idle / 可重试
+    end
+
+    opt 存在可重试录音
+        User->>Control: 点击取消按钮位置的重试图标
+        Control->>Runtime: 临时还原缓冲 WAV 并重试
     end
 ```
 
-系统不会边录音边流式上传。只有停止录音并完成 WAV 后，才会进行转码和 ASR 请求。
+系统不会边录音边流式上传。只有停止录音并完成 WAV 后，才会进行转码和 ASR 请求。完成的 WAV 超过 100,000,000 字节时，请求仍会正常进行，但 GUI 不会保留它用于重试；此时处理最终失败会进入 `Error`。
 
 ## 运行时状态机
 
@@ -157,18 +168,23 @@ stateDiagram-v2
     Recording --> Uploading: 停止并完成 WAV
     Paused --> Uploading: 停止并完成 WAV
 
+    Idle --> Uploading: 重试缓冲的 WAV
+
     Recording --> Idle: 取消录音
     Paused --> Idle: 取消录音
 
     Uploading --> Idle: 粘贴成功
     Uploading --> Idle: 识别结果为空
     Uploading --> Idle: 手动取消请求
-    Uploading --> Error: 转换、上传或粘贴失败
+    Uploading --> Idle: 转换、上传或粘贴失败且有重试缓冲
+    Uploading --> Error: 转换、上传或粘贴失败且无重试缓冲
 
     Error --> Idle: 保存有效设置
 ```
 
 普通动作使用一个非排队动作锁。繁忙时重复的开始、停止或暂停动作会被丢弃，不会排队到稍后执行。`Uploading` 状态下的取消是例外：它绕过动作锁，直接取消当前请求令牌。
+
+只有结束一段新的录音才会替换重试缓冲。录制中取消会保留上一条缓冲录音；上传中取消会保留刚取消请求的录音。重试成功或失败后，仍保留同一条缓冲录音。
 
 ## 功能范围与当前限制
 
@@ -244,7 +260,7 @@ ffmpeg -version
 |---|---|---|
 | 麦克风 | `Idle`、`Error`、`Recording`、`Paused` | 开始录音，或停止录音并进入识别流程 |
 | 暂停/播放 | `Recording`、`Paused` | 暂停或恢复录音 |
-| 取消 | `Recording`、`Paused`、`Uploading` | 删除当前录音，或取消正在等待的识别请求 |
+| 取消 / 重试 | `Recording`、`Paused`、`Uploading`；存在可重试录音时的 `Idle` | 取消当前录音或正在等待的识别请求。`Idle` 且无可重试录音时，该位置仍显示不可用的取消图标；存在可重试录音时显示重试图标，并重新提交缓冲录音 |
 | 齿轮 | 任意非关闭状态 | 打开原生设置窗口 |
 | `-` / `+` | 任意状态 | 切换完整浮窗与 minimal 工具条 |
 | 顶部拖动条 | 完整模式 | 移动浮窗 |
@@ -580,6 +596,8 @@ data.items[0][1].text
 - 手动取消会中止正在进行的请求发送、响应读取或重试等待。
 - 取消不是错误：GUI 状态返回 `Idle` 并显示“请求已取消”。
 - 只有重试耗尽且 `REQUEST_FAILED_NOTIFICATION=true` 时，才会尝试粘贴 `[request failed]`。
+- GUI 会把最近一条已结束的录音作为可重试 WAV 保存在内存中，前提是大小不超过 100,000,000 字节。手动取消请求，以及重试成功或失败后，都会保留该 WAV。
+- 取消录制不会替换上一条可重试 WAV。结束一段新录音会替换它；新录音超过上限时不保留可重试 WAV。
 
 ## 默认快捷键与语法
 
@@ -642,6 +660,8 @@ audio-YYYY-MM-DD-HH.MM.SS.<ext>
 ```
 
 只有 HTTP 200 的响应会写入对应的 `.json` 文件。失败或在收到成功响应前取消时，不会生成响应 JSON。
+
+GUI 的重试缓冲独立于这里的可选磁盘缓存：它只在内存中保留最近一条已结束 WAV，最大 100,000,000 字节，并会在进程退出时释放（包括正常关闭、注销或断电）。重试时会临时还原一个 `RecordTemp_` WAV 以供转换，并在本次尝试后删除；不会创建持久化重试缓存。`KEEP_CACHE` 仍只控制普通录音请求原有的可选音频归档。
 
 ## 从源码构建
 

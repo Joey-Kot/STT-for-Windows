@@ -27,6 +27,9 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
 - **Cancelable processing pipeline**
   - Recording, external FFmpeg conversion, HTTP upload, response reading, retry waits, and clipboard waits are all cancellation-aware.
   - The cancel button and cancel hotkey remain available while the GUI is in the `Uploading` state.
+- **GUI recording retry**
+  - The GUI reuses the cancel-button slot for retry whenever it is idle with a retryable recording.
+  - It retains only the latest completed recording in process memory, capped at 100,000,000 bytes; the buffer is released when the application exits.
 - **Automatic extraction and paste**
   - Uses `TEXT_PATH` to read text from JSON responses, including nested objects and repeated array indexes.
   - Saves the original clipboard text, sends `Ctrl+V`, and then attempts to restore it.
@@ -74,6 +77,8 @@ flowchart LR
     Recorder --> WAV["PCM 16-bit WAV"]
 
     WAV --> Convert["Recording conversion abstraction"]
+    WAV --> RetryBuffer["GUI retry buffer<br/>latest completed WAV, memory only, ≤100 MB"]
+    RetryBuffer -->|Retry| Convert
     Convert -->|GUI| LibAv["Statically linked libav"]
     Convert -->|CLI| FFmpeg["External ffmpeg.exe"]
     FilePipeline --> FFmpeg
@@ -117,6 +122,7 @@ sequenceDiagram
     Control->>Runtime: toggle recording
     Runtime->>Recorder: Stop and finalize WAV
     Recorder-->>Runtime: RecordingResult
+    Runtime->>Runtime: Keep latest completed WAV in memory when ≤100 MB
     Runtime->>Runtime: Enter Uploading
     Runtime->>Converter: Convert to configured codec and container
     Converter-->>Runtime: Converted audio
@@ -136,11 +142,16 @@ sequenceDiagram
         Runtime-->>Control: Idle
     else Request ultimately fails
         ASR-->>Runtime: Non-200 response or network error
-        Runtime-->>Control: Error
+        Runtime-->>Control: Idle / retry available
+    end
+
+    opt Retry is available
+        User->>Control: Retry icon in the cancel-button slot
+        Control->>Runtime: Restore buffered WAV temporarily and retry
     end
 ```
 
-The application does not stream audio while recording. Conversion and the ASR request begin only after recording has stopped and the WAV file has been finalized.
+The application does not stream audio while recording. Conversion and the ASR request begin only after recording has stopped and the WAV file has been finalized. If the completed WAV is larger than 100,000,000 bytes, the request still proceeds normally but the GUI does not retain it for retry; a terminal processing failure then enters `Error`.
 
 ## Runtime state machine
 
@@ -157,18 +168,23 @@ stateDiagram-v2
     Recording --> Uploading: Stop and finalize WAV
     Paused --> Uploading: Stop and finalize WAV
 
+    Idle --> Uploading: Retry buffered WAV
+
     Recording --> Idle: Cancel recording
     Paused --> Idle: Cancel recording
 
     Uploading --> Idle: Paste succeeded
     Uploading --> Idle: Empty transcription
     Uploading --> Idle: Request canceled manually
-    Uploading --> Error: Conversion, upload, or paste failed
+    Uploading --> Idle: Conversion, upload, or paste failed with retry buffer
+    Uploading --> Error: Conversion, upload, or paste failed without retry buffer
 
     Error --> Idle: Valid settings saved
 ```
 
 Normal actions use a non-queuing action lock. Repeated start, stop, or pause actions received while busy are dropped instead of being queued for later execution. Cancellation in the `Uploading` state is the exception: it bypasses the action lock and directly cancels the active request token.
+
+The retry buffer is replaced only when a new recording is completed. Canceling while recording leaves the previous buffered recording untouched; canceling while uploading retains the recording whose request was canceled. A retry keeps its own buffered recording after either success or failure.
 
 ## Capabilities and current limitations
 
@@ -244,7 +260,7 @@ The interface language is not written to the ASR configuration file and does not
 |---|---|---|
 | Microphone | `Idle`, `Error`, `Recording`, `Paused` | Starts recording, or stops recording and enters the transcription pipeline |
 | Pause/play | `Recording`, `Paused` | Pauses or resumes recording |
-| Cancel | `Recording`, `Paused`, `Uploading` | Deletes the current recording or cancels the in-flight transcription request |
+| Cancel / retry | `Recording`, `Paused`, `Uploading`; `Idle` when retry is available | Cancels the current recording or in-flight transcription request. In `Idle`, the same slot stays a disabled cancel icon when there is no retryable recording; otherwise it shows a retry icon and resubmits the buffered recording |
 | Gear | Any state before shutdown | Opens the native settings window |
 | `-` / `+` | Any state | Switches between the full floating window and minimal toolbar |
 | Top drag handle | Full mode | Moves the floating window |
@@ -580,6 +596,8 @@ Text cannot be extracted from a non-JSON response. If an HTTP 200 response produ
 - Manual cancellation aborts an in-progress request send, response read, or retry wait.
 - Cancellation is not an error: the GUI returns to `Idle` and displays “Request canceled.”
 - `[request failed]` is pasted only when retries are exhausted and `REQUEST_FAILED_NOTIFICATION=true`.
+- The GUI keeps the latest completed recording as one retryable in-memory WAV, if it is at most 100,000,000 bytes. It retains that WAV after a manual request cancellation and after a retry succeeds or fails.
+- Canceling a recording does not replace the previous retryable WAV. Completing a new recording replaces it; a new recording over the limit leaves no retryable WAV.
 
 ## Default hotkeys and syntax
 
@@ -642,6 +660,8 @@ audio-YYYY-MM-DD-HH.MM.SS.<ext>
 ```
 
 Only an HTTP 200 response is written to the corresponding `.json` file. Failures and cancellations before a successful response do not produce a response JSON file.
+
+The GUI retry buffer is separate from this optional disk cache. It retains only the latest completed WAV in memory, up to 100,000,000 bytes, and is released when the process exits (including normal shutdown, logout, or power-off). A retry temporarily recreates a `RecordTemp_` WAV for conversion and removes it after the attempt; it does not create a persistent retry cache. `KEEP_CACHE` continues to control the existing optional audio archive for normal recording requests.
 
 ## Build from source
 

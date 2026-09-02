@@ -29,7 +29,7 @@ use crate::i18n::Language;
 use crate::platform::{self, GuiLibAvConverter};
 use crate::render::{
     FULL_HEIGHT, FULL_WIDTH, MINIMAL_HEIGHT, MINIMAL_WIDTH, Renderer, button_is_disabled,
-    hit_test_button,
+    button_shows_retry, hit_test_button,
 };
 use crate::resources;
 use crate::settings::{SettingsWindow, WM_LANGUAGE_CHANGED};
@@ -102,6 +102,7 @@ fn run_inner() -> Result<(), String> {
     };
     let runtime =
         Runtime::new(config, Arc::new(GuiLibAvConverter)).map_err(|error| error.to_string())?;
+    runtime.enable_retry_buffer();
     let instance = unsafe { GetModuleHandleW(None).map_err(|error| error.to_string())? };
     let cursor: HCURSOR =
         unsafe { LoadCursorW(None, IDC_ARROW).map_err(|error| error.to_string())? };
@@ -434,7 +435,7 @@ unsafe extern "system" fn window_proc(
             }
             if state
                 .hovered_button
-                .is_some_and(|button| button_is_disabled(button, state.event.state))
+                .is_some_and(|button| button_is_disabled(button, &state.event))
             {
                 set_hovered_button(state, None);
             }
@@ -488,7 +489,7 @@ unsafe extern "system" fn window_proc(
 }
 
 fn handle_button(state: &mut WindowState, button: i32) {
-    if button_is_disabled(button, state.event.state) {
+    if button_is_disabled(button, &state.event) {
         return;
     }
     match button {
@@ -499,7 +500,11 @@ fn handle_button(state: &mut WindowState, button: i32) {
             state.runtime.try_toggle_pause();
         }
         2 => {
-            state.runtime.try_cancel();
+            if button_shows_retry(&state.event) {
+                state.runtime.try_retry();
+            } else {
+                state.runtime.try_cancel();
+            }
         }
         3 if state.minimal => set_minimal(state, false),
         3 => open_settings(state),
@@ -651,7 +656,7 @@ fn track_mouse_leave(state: &mut WindowState) {
 
 fn update_hover(state: &mut WindowState, x: i32, y: i32) {
     let hovered = hit_test_button(x, y, state.minimal)
-        .filter(|button| !button_is_disabled(*button, state.event.state));
+        .filter(|button| !button_is_disabled(*button, &state.event));
     set_hovered_button(state, hovered);
 }
 

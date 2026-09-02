@@ -181,10 +181,11 @@ impl Renderer {
             }
 
             let count = if minimal { 4 } else { 5 };
+            let retry_button = button_shows_retry(event);
             for index in 0..count {
                 let active_record =
                     index == 0 && matches!(event.state, State::Recording | State::Paused);
-                let is_disabled = button_is_disabled(index, event.state);
+                let is_disabled = button_is_disabled(index, event);
                 let hover_progress = (-hover_lifts[index as usize]).clamp(0.0, 1.0);
                 let base_color = if active_record {
                     active_color
@@ -220,6 +221,8 @@ impl Renderer {
                     &white
                 } else if index == 1 {
                     &warning
+                } else if index == 2 && retry_button {
+                    &accent
                 } else if index == 2 {
                     &danger
                 } else if index >= 3 {
@@ -237,6 +240,7 @@ impl Renderer {
                     &wave_primary,
                     &wave_secondary,
                     event.state,
+                    retry_button,
                     minimal,
                     animation_time,
                 );
@@ -330,9 +334,16 @@ pub fn hit_test_button(x: i32, y: i32, minimal: bool) -> Option<i32> {
     })
 }
 
-pub fn button_is_disabled(index: i32, state: State) -> bool {
+pub fn button_shows_retry(event: &Event) -> bool {
+    event.state == State::Idle && event.retry_available
+}
+
+pub fn button_is_disabled(index: i32, event: &Event) -> bool {
+    let state = event.state;
     (index == 1 && !matches!(state, State::Recording | State::Paused))
-        || (index == 2 && !matches!(state, State::Recording | State::Paused | State::Uploading))
+        || (index == 2
+            && !matches!(state, State::Recording | State::Paused | State::Uploading)
+            && !button_shows_retry(event))
         || (index == 0 && state == State::Uploading)
 }
 
@@ -375,6 +386,7 @@ unsafe fn draw_icon(
     wave_primary: &ID2D1SolidColorBrush,
     wave_secondary: &ID2D1SolidColorBrush,
     state: State,
+    retry_button: bool,
     minimal: bool,
     animation_time: f32,
 ) {
@@ -429,6 +441,7 @@ unsafe fn draw_icon(
                     cy + 5.25,
                 );
             }
+            2 if retry_button => draw_retry_icon(target, stroke_style, cx, cy, brush),
             2 => {
                 draw_line(
                     target,
@@ -478,6 +491,53 @@ unsafe fn draw_icon(
                 draw_line(target, stroke_style, brush, 1.5, cx - 4.5, cy, cx + 4.5, cy);
             }
         }
+    }
+}
+
+unsafe fn draw_retry_icon(
+    target: &ID2D1HwndRenderTarget,
+    stroke_style: &ID2D1StrokeStyle,
+    cx: f32,
+    cy: f32,
+    brush: &ID2D1SolidColorBrush,
+) {
+    const START_ANGLE: f32 = 0.55;
+    const SWEEP_ANGLE: f32 = std::f32::consts::TAU - 1.1;
+    const STEPS: usize = 18;
+    const RADIUS: f32 = 5.0;
+
+    let mut previous = v(
+        cx + RADIUS * START_ANGLE.cos(),
+        cy + RADIUS * START_ANGLE.sin(),
+    );
+    for step in 1..=STEPS {
+        let angle = START_ANGLE + SWEEP_ANGLE * step as f32 / STEPS as f32;
+        let point = v(cx + RADIUS * angle.cos(), cy + RADIUS * angle.sin());
+        unsafe { target.DrawLine(previous, point, brush, 1.5, stroke_style) };
+        previous = point;
+    }
+
+    unsafe {
+        draw_line(
+            target,
+            stroke_style,
+            brush,
+            1.5,
+            previous.X,
+            previous.Y,
+            previous.X - 4.25,
+            previous.Y + 0.25,
+        );
+        draw_line(
+            target,
+            stroke_style,
+            brush,
+            1.5,
+            previous.X,
+            previous.Y,
+            previous.X - 0.25,
+            previous.Y + 4.25,
+        );
     }
 }
 
