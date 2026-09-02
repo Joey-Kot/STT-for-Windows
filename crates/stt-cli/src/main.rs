@@ -153,9 +153,9 @@ struct Arguments {
     /// Pause/resume recording hotkey.
     #[arg(long, value_name = "HOTKEY", help_heading = "Hotkeys")]
     pause_key: Option<String>,
-    /// Recording/request cancellation hotkey.
+    /// Cancels a recording/request or retries the latest completed recording.
     #[arg(long, value_name = "HOTKEY", help_heading = "Hotkeys")]
-    cancel_key: Option<String>,
+    cancel_or_retry_key: Option<String>,
     /// Use the low-level keyboard hook instead of RegisterHotKey.
     #[arg(
         long,
@@ -247,7 +247,7 @@ impl Arguments {
             || self.verify_ssl.is_some()
             || self.start_key.is_some()
             || self.pause_key.is_some()
-            || self.cancel_key.is_some()
+            || self.cancel_or_retry_key.is_some()
             || self.hotkey_hook.is_some()
             || self.clipboard_write_delay.is_some()
             || self.clipboard_restore_delay.is_some()
@@ -282,7 +282,7 @@ impl Arguments {
         set(&mut config.verify_ssl, self.verify_ssl);
         set(&mut config.start_key, self.start_key);
         set(&mut config.pause_key, self.pause_key);
-        set(&mut config.cancel_key, self.cancel_key);
+        set(&mut config.cancel_or_retry_key, self.cancel_or_retry_key);
         set(&mut config.hotkey_hook, self.hotkey_hook);
         set(
             &mut config.clipboard_write_delay,
@@ -353,6 +353,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
     }
 
     let runtime = Runtime::new(config, converter)?;
+    runtime.enable_retry_buffer();
     runtime.set_event_handler(Some(Arc::new(|event| {
         if event.error.is_empty() {
             println!("[state] {}: {}", event.state, event.message);
@@ -364,7 +365,7 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
         }
     })));
     runtime.start_hotkeys()?;
-    println!("[main] ready. Use hotkeys to start/stop/pause/cancel.");
+    println!("[main] ready. Use hotkeys to start/stop/pause/cancel or retry.");
     tokio::signal::ctrl_c().await?;
     runtime.stop();
     Ok(())
@@ -402,6 +403,16 @@ mod tests {
         assert_eq!(config.clipboard_write_delay, 25);
         assert_eq!(config.clipboard_restore_delay, 75);
         assert_eq!(config.sampling_rate, 22_050);
+    }
+
+    #[test]
+    fn cancel_or_retry_key_option_replaces_cancel_key() {
+        let arguments =
+            Arguments::try_parse_from(["stt", "--cancel-or-retry-key", "ctrl+alt+r"]).unwrap();
+        let mut config = Config::default();
+        arguments.apply(&mut config);
+        assert_eq!(config.cancel_or_retry_key, "ctrl+alt+r");
+        assert!(Arguments::try_parse_from(["stt", "--cancel-key", "alt+esc"]).is_err());
     }
 
     #[test]

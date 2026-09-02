@@ -44,7 +44,7 @@ defaults. Missing fields receive defaults and unknown fields are ignored.
 | `HOTKEY_HOOK` | `true` | Low-level hook when true, RegisterHotKey otherwise |
 | `START_KEY` | `"ctrl+alt+q"` | Start/stop recording |
 | `PAUSE_KEY` | `"ctrl+alt+s"` | Pause/resume |
-| `CANCEL_KEY` | `"alt+esc"` | Cancel recording |
+| `CANCEL_OR_RETRY_KEY` | `"alt+esc"` | Cancel recording/request, or retry the buffered recording while idle |
 | `CLIPBOARD_WRITE_DELAY` | `80` | Milliseconds between writing text and sending Ctrl+V |
 | `CLIPBOARD_RESTORE_DELAY` | `120` | Milliseconds between Ctrl+V and clipboard restoration |
 | `CACHE_DIR` | `""` | Empty falls back to current directory |
@@ -112,7 +112,8 @@ duplicate detection. RegisterHotKey mode uses `MOD_NOREPEAT`, a dedicated
 message thread, `WM_QUIT`, and unregisters all bindings. Hook mode uses
 `WH_KEYBOARD_LL`, ignores `LLKHF_INJECTED`, checks only required modifiers with
 `GetAsyncKeyState`, swallows held-repeat keydown and its matching keyup, and
-does not forbid extra modifiers.
+does not forbid extra modifiers. `CANCEL_OR_RETRY_KEY` cancels while recording
+or uploading; when idle with a buffered recording, it retries that recording.
 
 ## PortAudio recorder
 
@@ -149,6 +150,7 @@ dropped when busy; they never queue for a later state. Upload
 cancellation bypasses that lock and cancels the active request token directly.
 
 - Idle/Error: start is allowed.
+- Idle with a retry buffer: `CANCEL_OR_RETRY_KEY` retries the buffered WAV.
 - Recording/Paused: stop and cancel are allowed.
 - Pause outside recording is silent except debug output.
 - Uploading: cancel is allowed; other inputs are dropped.
@@ -160,6 +162,12 @@ an `[empty result]` paste. Only exhausted retries plus
 cancellation signals the active conversion/upload pipeline, immediately aborts
 ASR upload, response, and retry waits, performs cache cleanup, and returns to
 Idle without reporting an upload failure.
+
+GUI and CLI hotkey mode retain the latest completed WAV in memory for retry,
+up to 100,000,000 bytes. The buffer survives failed, successful, and manually
+canceled requests, is replaced only by another completed recording, and is
+released during shutdown. Retry attempts recreate a temporary WAV and do not
+create a persistent retry cache.
 
 Shutdown cancels the lifecycle, requests recorder cancellation without waiting,
 unregisters hotkeys, and waits at most about 250 ms for the action lock.

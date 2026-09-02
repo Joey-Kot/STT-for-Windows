@@ -225,8 +225,8 @@ const FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Text,
     },
     FieldSpec {
-        key: "CANCEL_KEY",
-        label: "Cancel key",
+        key: "CANCEL_OR_RETRY_KEY",
+        label: "Cancel or Retry Key",
         group: "Hotkeys",
         kind: FieldKind::Text,
     },

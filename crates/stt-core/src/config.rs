@@ -53,8 +53,8 @@ pub struct Config {
     pub start_key: String,
     #[serde(rename = "PAUSE_KEY")]
     pub pause_key: String,
-    #[serde(rename = "CANCEL_KEY")]
-    pub cancel_key: String,
+    #[serde(rename = "CANCEL_OR_RETRY_KEY")]
+    pub cancel_or_retry_key: String,
     #[serde(rename = "CLIPBOARD_WRITE_DELAY")]
     pub clipboard_write_delay: u64,
     #[serde(rename = "CLIPBOARD_RESTORE_DELAY")]
@@ -99,7 +99,7 @@ impl Default for Config {
             hotkey_hook: true,
             start_key: "ctrl+alt+q".into(),
             pause_key: "ctrl+alt+s".into(),
-            cancel_key: "alt+esc".into(),
+            cancel_or_retry_key: "alt+esc".into(),
             clipboard_write_delay: 80,
             clipboard_restore_delay: 120,
             cache_dir: String::new(),
@@ -192,7 +192,7 @@ impl Config {
                 self.bit_rate
             )));
         }
-        hotkey::validate_bindings(&self.start_key, &self.pause_key, &self.cancel_key)
+        hotkey::validate_bindings(&self.start_key, &self.pause_key, &self.cancel_or_retry_key)
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
 
         let codecs: HashSet<&str> = [
@@ -326,5 +326,7 @@ mod tests {
         let raw: serde_json::Map<String, serde_json::Value> =
             serde_json::from_str(&fs::read_to_string(path).unwrap()).unwrap();
         assert!(!raw.contains_key("NOTIFICATION"));
+        assert!(!raw.contains_key("CANCEL_KEY"));
+        assert!(raw.contains_key("CANCEL_OR_RETRY_KEY"));
     }
 }

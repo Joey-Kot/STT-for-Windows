@@ -20,7 +20,7 @@
   "HOTKEY_HOOK": true,
   "START_KEY": "ctrl+alt+q",
   "PAUSE_KEY": "ctrl+alt+s",
-  "CANCEL_KEY": "alt+esc",
+  "CANCEL_OR_RETRY_KEY": "alt+esc",
   "CLIPBOARD_WRITE_DELAY": 80,
   "CLIPBOARD_RESTORE_DELAY": 120,
   "CACHE_DIR": "C:\\xxx\\xxx\\xxx",

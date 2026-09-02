@@ -19,6 +19,7 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
   - Interface languages: English, Simplified Chinese, German, Japanese, and French.
 - **Global hotkey recording**
   - Start or stop recording, pause or resume recording, and cancel a recording or an in-flight transcription request.
+  - When idle with a retryable recording, the Cancel or Retry hotkey resubmits that recording.
   - Uses a low-level keyboard hook by default, with `RegisterHotKey` available as an alternative.
 - **General-purpose ASR HTTP interface**
   - Uploads audio through `multipart/form-data` with a fixed file field named `file`.
@@ -26,10 +27,10 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
   - Supports request timeouts, exponential-backoff retries, HTTP/2, and TLS certificate verification.
 - **Cancelable processing pipeline**
   - Recording, external FFmpeg conversion, HTTP upload, response reading, retry waits, and clipboard waits are all cancellation-aware.
-  - The cancel button and cancel hotkey remain available while the GUI is in the `Uploading` state.
-- **GUI recording retry**
-  - The GUI reuses the cancel-button slot for retry whenever it is idle with a retryable recording.
-  - It retains only the latest completed recording in process memory, capped at 100,000,000 bytes; the buffer is released when the application exits.
+  - While uploading, the GUI keeps its cancel button available and both programs keep the Cancel or Retry hotkey available.
+- **Recording retry**
+  - GUI and CLI hotkey mode retain only the latest completed recording in process memory, capped at 100,000,000 bytes; the buffer is released when the application exits.
+  - The GUI reuses the cancel-button slot for retry, while both programs reuse the Cancel or Retry hotkey whenever they are idle with a retryable recording.
 - **Automatic extraction and paste**
   - Uses `TEXT_PATH` to read text from JSON responses, including nested objects and repeated array indexes.
   - Saves the original clipboard text, sends `Ctrl+V`, and then attempts to restore it.
@@ -77,7 +78,7 @@ flowchart LR
     Recorder --> WAV["PCM 16-bit WAV"]
 
     WAV --> Convert["Recording conversion abstraction"]
-    WAV --> RetryBuffer["GUI retry buffer<br/>latest completed WAV, memory only, ≤100 MB"]
+    WAV --> RetryBuffer["GUI and CLI retry buffer<br/>latest completed WAV, memory only, ≤100 MB"]
     RetryBuffer -->|Retry| Convert
     Convert -->|GUI| LibAv["Statically linked libav"]
     Convert -->|CLI| FFmpeg["External ffmpeg.exe"]
@@ -129,7 +130,7 @@ sequenceDiagram
     Runtime->>ASR: multipart/form-data POST
 
     alt Manual cancellation
-        User->>Control: Cancel button / CANCEL_KEY
+        User->>Control: Cancel button / Cancel or Retry hotkey
         Control->>Runtime: Cancel active request token
         Runtime-->>ASR: Abort upload, response read, or retry wait
         Runtime-->>Control: Idle / Request canceled
@@ -146,12 +147,12 @@ sequenceDiagram
     end
 
     opt Retry is available
-        User->>Control: Retry icon in the cancel-button slot
+        User->>Control: Retry icon or Cancel or Retry hotkey
         Control->>Runtime: Restore buffered WAV temporarily and retry
     end
 ```
 
-The application does not stream audio while recording. Conversion and the ASR request begin only after recording has stopped and the WAV file has been finalized. If the completed WAV is larger than 100,000,000 bytes, the request still proceeds normally but the GUI does not retain it for retry; a terminal processing failure then enters `Error`.
+The application does not stream audio while recording. Conversion and the ASR request begin only after recording has stopped and the WAV file has been finalized. If the completed WAV is larger than 100,000,000 bytes, the request still proceeds normally but GUI and CLI hotkey mode do not retain it for retry; a terminal processing failure then enters `Error`.
 
 ## Runtime state machine
 
@@ -396,7 +397,7 @@ If `--output` is omitted, the default output is `<input-file-name>.txt` in the c
 |---|---|
 | `--start-key <HOTKEY>` | Overrides the start/stop hotkey |
 | `--pause-key <HOTKEY>` | Overrides the pause/resume hotkey |
-| `--cancel-key <HOTKEY>` | Overrides the recording/request cancellation hotkey |
+| `--cancel-or-retry-key <HOTKEY>` | Overrides the hotkey that cancels a recording/request or retries the latest completed recording |
 | `--hotkey-hook <BOOL>` | Selects the low-level keyboard hook or `RegisterHotKey` |
 | `--clipboard-write-delay <MS>` | Overrides the wait after writing the transcription and before sending `Ctrl+V` |
 | `--clipboard-restore-delay <MS>` | Overrides the wait after sending `Ctrl+V` and before restoring the original clipboard |
@@ -451,7 +452,7 @@ The GUI and CLI use the same JSON data structure. Missing fields receive their d
   "HOTKEY_HOOK": true,
   "START_KEY": "ctrl+alt+q",
   "PAUSE_KEY": "ctrl+alt+s",
-  "CANCEL_KEY": "alt+esc",
+  "CANCEL_OR_RETRY_KEY": "alt+esc",
   "CLIPBOARD_WRITE_DELAY": 80,
   "CLIPBOARD_RESTORE_DELAY": 120,
   "CACHE_DIR": "",
@@ -508,7 +509,7 @@ Common outputs covered by the static GUI build include Opus/Ogg, MP3, AAC, FLAC,
 | `HOTKEY_HOOK` | `true` | Uses `WH_KEYBOARD_LL` when `true`; uses `RegisterHotKey` when `false` |
 | `START_KEY` | `"ctrl+alt+q"` | Starts or stops recording |
 | `PAUSE_KEY` | `"ctrl+alt+s"` | Pauses or resumes recording |
-| `CANCEL_KEY` | `"alt+esc"` | Cancels recording or the active transcription request |
+| `CANCEL_OR_RETRY_KEY` | `"alt+esc"` | Cancels recording or the active transcription request; when idle with a retryable recording, retries it |
 | `CLIPBOARD_WRITE_DELAY` | `80` | Milliseconds between writing the transcription and sending `Ctrl+V` |
 | `CLIPBOARD_RESTORE_DELAY` | `120` | Milliseconds between sending `Ctrl+V` and restoring the original clipboard |
 | `CACHE_DIR` | `""` | When non-empty, attempts to create it and convert it to an absolute path; on failure, falls back to the current directory and clears the setting |
@@ -594,9 +595,9 @@ Text cannot be extracted from a non-JSON response. If an HTTP 200 response produ
 - `MAX_RETRY` includes the first request.
 - The wait begins at `RETRY_BASE_DELAY` and is multiplied by 2 after each failure.
 - Manual cancellation aborts an in-progress request send, response read, or retry wait.
-- Cancellation is not an error: the GUI returns to `Idle` and displays “Request canceled.”
+- Cancellation is not an error: GUI and CLI hotkey mode return to `Idle` and report “Request canceled.”
 - `[request failed]` is pasted only when retries are exhausted and `REQUEST_FAILED_NOTIFICATION=true`.
-- The GUI keeps the latest completed recording as one retryable in-memory WAV, if it is at most 100,000,000 bytes. It retains that WAV after a manual request cancellation and after a retry succeeds or fails.
+- GUI and CLI hotkey mode keep the latest completed recording as one retryable in-memory WAV, if it is at most 100,000,000 bytes. They retain that WAV after a manual request cancellation and after a retry succeeds or fails.
 - Canceling a recording does not replace the previous retryable WAV. Completing a new recording replaces it; a new recording over the limit leaves no retryable WAV.
 
 ## Default hotkeys and syntax
@@ -605,7 +606,7 @@ Text cannot be extracted from a non-JSON response. If an HTTP 200 response produ
 |---|---|
 | Start/stop recording | `ctrl+alt+q` |
 | Pause/resume recording | `ctrl+alt+s` |
-| Cancel recording/transcription request | `alt+esc` |
+| Cancel recording/transcription request, or retry the latest completed recording when idle | `alt+esc` |
 
 Supported modifier aliases:
 
@@ -661,7 +662,7 @@ audio-YYYY-MM-DD-HH.MM.SS.<ext>
 
 Only an HTTP 200 response is written to the corresponding `.json` file. Failures and cancellations before a successful response do not produce a response JSON file.
 
-The GUI retry buffer is separate from this optional disk cache. It retains only the latest completed WAV in memory, up to 100,000,000 bytes, and is released when the process exits (including normal shutdown, logout, or power-off). A retry temporarily recreates a `RecordTemp_` WAV for conversion and removes it after the attempt; it does not create a persistent retry cache. `KEEP_CACHE` continues to control the existing optional audio archive for normal recording requests.
+The GUI and CLI hotkey-mode retry buffer is separate from this optional disk cache. It retains only the latest completed WAV in memory, up to 100,000,000 bytes, and is released when the process exits (including normal shutdown, logout, or power-off). A retry temporarily recreates a `RecordTemp_` WAV for conversion and removes it after the attempt; it does not create a persistent retry cache. `KEEP_CACHE` continues to control the existing optional audio archive for normal recording requests.
 
 ## Build from source
 

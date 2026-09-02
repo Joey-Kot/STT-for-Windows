@@ -37,7 +37,7 @@ Windows 10 and Windows 11 systems:
 - Windows 11 rounded corners versus Windows 10 square behavior;
 - per-monitor high-DPI movement and rendering;
 - settings tabs, password token edit, five display languages, save/reload;
-- cancel button and cancel hotkey abort a blocked ASR request and return to Idle;
+- cancel button and Cancel or Retry hotkey abort a blocked ASR request and return to Idle; verify the same hotkey retries the buffered recording while idle in both GUI and CLI;
 - busy quit confirmation and bounded shutdown during upload/libav/driver work.
 
 The native GUI dimensions are 222×94 for the full window, 170×46 for minimal

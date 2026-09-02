@@ -19,6 +19,7 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
   - 支持英文、简体中文、德语、日语和法语界面。
 - **全局快捷键录音**
   - 开始或停止录音、暂停或恢复录音、取消录音或正在等待的识别请求。
+  - 空闲且存在可重试录音时，取消或重试快捷键会重新提交该录音。
   - 默认使用低级键盘钩子，也可以改用 `RegisterHotKey`。
 - **通用 ASR HTTP 接口**
   - 通过 `multipart/form-data` 上传音频，文件字段固定为 `file`。
@@ -26,10 +27,10 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
   - 支持请求超时、指数退避重试、HTTP/2 和 TLS 证书校验。
 - **可取消的处理链路**
   - 录音、外部 FFmpeg 转换、HTTP 上传、响应读取、重试等待和剪贴板等待均接入取消机制。
-  - GUI 处于 `Uploading` 状态时，取消按钮和取消快捷键仍然可用。
-- **GUI 录音重试**
-  - GUI 空闲且存在可重试录音时，复用取消按钮的位置显示重试。
-  - 仅在进程内保存最近一条已结束录音，大小上限为 100,000,000 字节；退出程序时释放。
+  - 请求处于 `Uploading` 状态时，GUI 保持取消按钮可用；两个程序均保持取消或重试快捷键可用。
+- **录音重试**
+  - GUI 和 CLI 的快捷键模式仅在进程内保存最近一条已结束录音，大小上限为 100,000,000 字节；退出程序时释放。
+  - GUI 会复用取消按钮的位置显示重试；两个程序都在空闲且存在可重试录音时复用取消或重试快捷键。
 - **自动提取与粘贴**
   - 使用 `TEXT_PATH` 从 JSON 响应中读取文本，支持多层对象和重复数组索引。
   - 暂存原剪贴板文本，发送 `Ctrl+V` 后再尝试恢复。
@@ -77,7 +78,7 @@ flowchart LR
     Recorder --> WAV["PCM 16-bit WAV"]
 
     WAV --> Convert["录音音频转换抽象"]
-    WAV --> RetryBuffer["GUI 重试缓冲<br/>最近一条已结束 WAV，仅内存，≤100 MB"]
+    WAV --> RetryBuffer["GUI 和 CLI 重试缓冲<br/>最近一条已结束 WAV，仅内存，≤100 MB"]
     RetryBuffer -->|重试| Convert
     Convert -->|GUI| LibAv["静态 libav"]
     Convert -->|CLI| FFmpeg["外部 ffmpeg.exe"]
@@ -129,7 +130,7 @@ sequenceDiagram
     Runtime->>ASR: multipart/form-data POST
 
     alt 手动取消
-        User->>Control: 取消按钮 / CANCEL_KEY
+        User->>Control: 取消按钮 / 取消或重试快捷键
         Control->>Runtime: 取消当前请求令牌
         Runtime-->>ASR: 中止上传、响应或重试等待
         Runtime-->>Control: Idle / 请求已取消
@@ -146,12 +147,12 @@ sequenceDiagram
     end
 
     opt 存在可重试录音
-        User->>Control: 点击取消按钮位置的重试图标
+        User->>Control: 点击重试图标或按取消或重试快捷键
         Control->>Runtime: 临时还原缓冲 WAV 并重试
     end
 ```
 
-系统不会边录音边流式上传。只有停止录音并完成 WAV 后，才会进行转码和 ASR 请求。完成的 WAV 超过 100,000,000 字节时，请求仍会正常进行，但 GUI 不会保留它用于重试；此时处理最终失败会进入 `Error`。
+系统不会边录音边流式上传。只有停止录音并完成 WAV 后，才会进行转码和 ASR 请求。完成的 WAV 超过 100,000,000 字节时，请求仍会正常进行，但 GUI 和 CLI 的快捷键模式不会保留它用于重试；此时处理最终失败会进入 `Error`。
 
 ## 运行时状态机
 
@@ -396,7 +397,7 @@ ffmpeg -version
 |---|---|
 | `--start-key <HOTKEY>` | 覆盖开始/停止快捷键 |
 | `--pause-key <HOTKEY>` | 覆盖暂停/恢复快捷键 |
-| `--cancel-key <HOTKEY>` | 覆盖取消录音/请求快捷键 |
+| `--cancel-or-retry-key <HOTKEY>` | 覆盖取消录音/请求或重试最近一条已结束录音的快捷键 |
 | `--hotkey-hook <BOOL>` | 选择低级键盘钩子或 `RegisterHotKey` |
 | `--clipboard-write-delay <MS>` | 覆盖写入识别文本后、发送 `Ctrl+V` 前的等待时间 |
 | `--clipboard-restore-delay <MS>` | 覆盖发送 `Ctrl+V` 后、恢复原剪贴板前的等待时间 |
@@ -451,7 +452,7 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
   "HOTKEY_HOOK": true,
   "START_KEY": "ctrl+alt+q",
   "PAUSE_KEY": "ctrl+alt+s",
-  "CANCEL_KEY": "alt+esc",
+  "CANCEL_OR_RETRY_KEY": "alt+esc",
   "CLIPBOARD_WRITE_DELAY": 80,
   "CLIPBOARD_RESTORE_DELAY": 120,
   "CACHE_DIR": "",
@@ -508,7 +509,7 @@ GUI 静态构建覆盖的常用输出包括 Opus/Ogg、MP3、AAC、FLAC、Vorbis
 | `HOTKEY_HOOK` | `true` | `true` 使用 `WH_KEYBOARD_LL`；`false` 使用 `RegisterHotKey` |
 | `START_KEY` | `"ctrl+alt+q"` | 开始或停止录音 |
 | `PAUSE_KEY` | `"ctrl+alt+s"` | 暂停或恢复录音 |
-| `CANCEL_KEY` | `"alt+esc"` | 取消录音或当前识别请求 |
+| `CANCEL_OR_RETRY_KEY` | `"alt+esc"` | 取消录音或当前识别请求；空闲且存在可重试录音时重试 |
 | `CLIPBOARD_WRITE_DELAY` | `80` | 写入识别文本后、发送 `Ctrl+V` 前的等待时间，单位毫秒 |
 | `CLIPBOARD_RESTORE_DELAY` | `120` | 发送 `Ctrl+V` 后、恢复原剪贴板前的等待时间，单位毫秒 |
 | `CACHE_DIR` | `""` | 非空时尝试创建并转换为绝对路径；失败时回退当前目录并清空设置值 |
@@ -594,9 +595,9 @@ data.items[0][1].text
 - `MAX_RETRY` 包含首次请求。
 - 等待时间从 `RETRY_BASE_DELAY` 开始，每次失败后乘以 2。
 - 手动取消会中止正在进行的请求发送、响应读取或重试等待。
-- 取消不是错误：GUI 状态返回 `Idle` 并显示“请求已取消”。
+- 取消不是错误：GUI 和 CLI 的快捷键模式会返回 `Idle` 并显示“请求已取消”。
 - 只有重试耗尽且 `REQUEST_FAILED_NOTIFICATION=true` 时，才会尝试粘贴 `[request failed]`。
-- GUI 会把最近一条已结束的录音作为可重试 WAV 保存在内存中，前提是大小不超过 100,000,000 字节。手动取消请求，以及重试成功或失败后，都会保留该 WAV。
+- GUI 和 CLI 的快捷键模式会把最近一条已结束的录音作为可重试 WAV 保存在内存中，前提是大小不超过 100,000,000 字节。手动取消请求，以及重试成功或失败后，都会保留该 WAV。
 - 取消录制不会替换上一条可重试 WAV。结束一段新录音会替换它；新录音超过上限时不保留可重试 WAV。
 
 ## 默认快捷键与语法
@@ -605,7 +606,7 @@ data.items[0][1].text
 |---|---|
 | 开始/停止录音 | `ctrl+alt+q` |
 | 暂停/恢复录音 | `ctrl+alt+s` |
-| 取消录音/识别请求 | `alt+esc` |
+| 取消录音/识别请求，或在空闲时重试最近一条已结束录音 | `alt+esc` |
 
 支持的修饰键别名：
 
@@ -661,7 +662,7 @@ audio-YYYY-MM-DD-HH.MM.SS.<ext>
 
 只有 HTTP 200 的响应会写入对应的 `.json` 文件。失败或在收到成功响应前取消时，不会生成响应 JSON。
 
-GUI 的重试缓冲独立于这里的可选磁盘缓存：它只在内存中保留最近一条已结束 WAV，最大 100,000,000 字节，并会在进程退出时释放（包括正常关闭、注销或断电）。重试时会临时还原一个 `RecordTemp_` WAV 以供转换，并在本次尝试后删除；不会创建持久化重试缓存。`KEEP_CACHE` 仍只控制普通录音请求原有的可选音频归档。
+GUI 和 CLI 快捷键模式的重试缓冲独立于这里的可选磁盘缓存：它只在内存中保留最近一条已结束 WAV，最大 100,000,000 字节，并会在进程退出时释放（包括正常关闭、注销或断电）。重试时会临时还原一个 `RecordTemp_` WAV 以供转换，并在本次尝试后删除；不会创建持久化重试缓存。`KEEP_CACHE` 仍只控制普通录音请求原有的可选音频归档。
 
 ## 从源码构建
 

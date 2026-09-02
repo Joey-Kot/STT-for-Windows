@@ -169,7 +169,7 @@ impl Runtime {
         self.inner.lock().config.clone()
     }
 
-    /// Enables the bounded, in-memory recording buffer used by the GUI retry control.
+    /// Enables the bounded, in-memory recording buffer used by interactive retry controls.
     pub fn enable_retry_buffer(&self) {
         self.inner.lock().retry_buffer_enabled = true;
     }
@@ -195,12 +195,8 @@ impl Runtime {
         self.try_action(2)
     }
 
-    pub fn try_cancel(self: &Arc<Self>) -> bool {
+    pub fn try_cancel_or_retry(self: &Arc<Self>) -> bool {
         self.try_action(3)
-    }
-
-    pub fn try_retry(self: &Arc<Self>) -> bool {
-        self.try_action(4)
     }
 
     pub async fn handle_action(self: &Arc<Self>, id: i32) -> bool {
@@ -241,8 +237,7 @@ impl Runtime {
         match id {
             1 => self.toggle_recording_locked().await,
             2 => self.toggle_pause_locked(),
-            3 => self.cancel_recording_locked().await,
-            4 => self.retry_recording_locked().await,
+            3 => self.cancel_or_retry_locked().await,
             _ => {}
         }
     }
@@ -262,7 +257,7 @@ impl Runtime {
         let registration = hotkey::register(
             &config.start_key,
             &config.pause_key,
-            &config.cancel_key,
+            &config.cancel_or_retry_key,
             config.hotkey_hook,
             move |id| {
                 if let Some(runtime) = weak.upgrade()
@@ -553,6 +548,20 @@ impl Runtime {
                     self.set_retryable_error("Cancel failed", &error);
                 }
             }
+        }
+    }
+
+    async fn cancel_or_retry_locked(&self) {
+        let retry_available = {
+            let inner = self.inner.lock();
+            inner.event.state == State::Idle
+                && inner.retry_buffer_enabled
+                && inner.retry_recording.is_some()
+        };
+        if retry_available {
+            self.retry_recording_locked().await;
+        } else {
+            self.cancel_recording_locked().await;
         }
     }
 
@@ -1042,7 +1051,7 @@ mod tests {
         let _guard = runtime.action_lock.clone().lock_owned().await;
         assert!(!runtime.try_toggle_recording());
         assert!(!runtime.try_toggle_pause());
-        assert!(!runtime.try_cancel());
+        assert!(!runtime.try_cancel_or_retry());
         assert_eq!(runtime.snapshot().state, State::Idle);
     }
 
@@ -1088,7 +1097,7 @@ mod tests {
         });
 
         started.wait().await;
-        assert!(runtime.try_cancel());
+        assert!(runtime.try_cancel_or_retry());
         let wav_path = task.await.unwrap();
         assert_eq!(
             runtime.snapshot(),
@@ -1188,7 +1197,7 @@ mod tests {
         });
         runtime.set_state(State::Idle, "", None::<&RuntimeError>);
 
-        runtime.retry_recording_locked().await;
+        assert!(runtime.handle_action(3).await);
 
         assert_eq!(runtime.snapshot().state, State::Idle);
         assert!(runtime.snapshot().retry_available);
@@ -1213,7 +1222,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn retry_request_cancel_bypasses_the_busy_action_lock_and_keeps_the_buffer() {
+    async fn cancel_or_retry_action_retries_the_buffer_and_can_be_canceled() {
         let directory = tempfile::tempdir().unwrap();
         let source = directory.path().join("source.wav");
         std::fs::write(&source, b"retry this recording").unwrap();
@@ -1236,15 +1245,12 @@ mod tests {
         });
 
         let task_runtime = runtime.clone();
-        let task = tokio::spawn(async move {
-            let _guard = task_runtime.action_lock.clone().lock_owned().await;
-            task_runtime.retry_recording_locked().await;
-        });
+        let task = tokio::spawn(async move { task_runtime.handle_action(3).await });
 
         started.wait().await;
         assert_eq!(runtime.snapshot().state, State::Uploading);
-        assert!(runtime.try_cancel());
-        task.await.unwrap();
+        assert!(runtime.try_cancel_or_retry());
+        assert!(task.await.unwrap());
 
         assert_eq!(runtime.snapshot().state, State::Idle);
         assert_eq!(runtime.snapshot().message, "Request canceled");

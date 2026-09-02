@@ -47,11 +47,15 @@ pub enum HotkeyError {
     Registration(String),
 }
 
-pub fn validate_bindings(start: &str, pause: &str, cancel: &str) -> Result<(), HotkeyError> {
+pub fn validate_bindings(
+    start: &str,
+    pause: &str,
+    cancel_or_retry: &str,
+) -> Result<(), HotkeyError> {
     let bindings = [
         ("START_KEY", start),
         ("PAUSE_KEY", pause),
-        ("CANCEL_KEY", cancel),
+        ("CANCEL_OR_RETRY_KEY", cancel_or_retry),
     ];
     let mut seen: HashMap<ParsedHotkey, (&'static str, String)> = HashMap::new();
     for (name, spec) in bindings {
@@ -214,7 +218,7 @@ pub use windows_impl::register;
 pub fn register(
     _start: &str,
     _pause: &str,
-    _cancel: &str,
+    _cancel_or_retry: &str,
     _hook: bool,
     _handler: impl Fn(i32) + Send + Sync + 'static,
     _debug: bool,

@@ -22,16 +22,20 @@ use super::{HotkeyError, HotkeyRegistration, ParsedHotkey, parse_hotkey, validat
 pub fn register(
     start: &str,
     pause: &str,
-    cancel: &str,
+    cancel_or_retry: &str,
     hook: bool,
     handler: impl Fn(i32) + Send + Sync + 'static,
     debug: bool,
 ) -> Result<HotkeyRegistration, HotkeyError> {
-    validate_bindings(start, pause, cancel)?;
+    validate_bindings(start, pause, cancel_or_retry)?;
     let definitions = [
         (1, start.to_string(), parse_hotkey(start)?),
         (2, pause.to_string(), parse_hotkey(pause)?),
-        (3, cancel.to_string(), parse_hotkey(cancel)?),
+        (
+            3,
+            cancel_or_retry.to_string(),
+            parse_hotkey(cancel_or_retry)?,
+        ),
     ];
     if hook {
         start_low_level_hook(definitions, Arc::new(handler), debug)

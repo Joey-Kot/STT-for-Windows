@@ -29,7 +29,7 @@ use crate::i18n::Language;
 use crate::platform::{self, GuiLibAvConverter};
 use crate::render::{
     FULL_HEIGHT, FULL_WIDTH, MINIMAL_HEIGHT, MINIMAL_WIDTH, Renderer, button_is_disabled,
-    button_shows_retry, hit_test_button,
+    hit_test_button,
 };
 use crate::resources;
 use crate::settings::{SettingsWindow, WM_LANGUAGE_CHANGED};
@@ -500,11 +500,7 @@ fn handle_button(state: &mut WindowState, button: i32) {
             state.runtime.try_toggle_pause();
         }
         2 => {
-            if button_shows_retry(&state.event) {
-                state.runtime.try_retry();
-            } else {
-                state.runtime.try_cancel();
-            }
+            state.runtime.try_cancel_or_retry();
         }
         3 if state.minimal => set_minimal(state, false),
         3 => open_settings(state),
