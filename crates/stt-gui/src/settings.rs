@@ -39,8 +39,8 @@ use windows::Win32::UI::WindowsAndMessaging::{
     SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
     WM_CTLCOLORBTN, WM_CTLCOLORDLG, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
     WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_NCCREATE,
-    WM_NCHITTEST, WM_PAINT, WM_SETFONT, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_EX_TOOLWINDOW,
-    WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    WM_NCHITTEST, WM_PAINT, WM_SETFONT, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
+    WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 
@@ -906,7 +906,10 @@ fn create_child(
             WINDOW_EX_STYLE::default(),
             class,
             PCWSTR(text.as_ptr()),
-            style,
+            // The display-language menu deliberately overlaps controls below it.
+            // Without sibling clipping, a lower-z native EDIT control may repaint
+            // over an open menu item.
+            style | WS_CLIPSIBLINGS,
             platform::scale(x, state.dpi),
             platform::scale(y, state.dpi),
             platform::scale(width, state.dpi),
