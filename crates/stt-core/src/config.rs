@@ -25,6 +25,8 @@ pub struct Config {
     pub text_path: String,
     #[serde(rename = "ExtraConfig")]
     pub extra_config: String,
+    #[serde(rename = "OPACITY")]
+    pub opacity: f64,
     #[serde(rename = "CHANNELS")]
     pub channels: i32,
     #[serde(rename = "SAMPLING_RATE")]
@@ -85,6 +87,7 @@ impl Default for Config {
             prompt: String::new(),
             text_path: "text".into(),
             extra_config: String::new(),
+            opacity: 1.0,
             channels: 1,
             sampling_rate: 16_000,
             sampling_rate_depth: 16,
@@ -168,6 +171,15 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if !self.opacity.is_finite()
+            || !(0.1..=1.0).contains(&self.opacity)
+            || !is_opacity_step_aligned(self.opacity)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "invalid OPACITY: {} (allowed 0.10..1.00 in steps of 0.01)",
+                self.opacity
+            )));
+        }
         if !(1..=8).contains(&self.channels) {
             return Err(ConfigError::Invalid(format!(
                 "invalid Channels: {} (allowed 1..8)",
@@ -257,6 +269,11 @@ impl Config {
     }
 }
 
+fn is_opacity_step_aligned(opacity: f64) -> bool {
+    let hundredths = opacity * 100.0;
+    (hundredths - hundredths.round()).abs() < 1e-9
+}
+
 pub fn container_extension(container: &str) -> String {
     let lower = container.to_ascii_lowercase();
     if lower.is_empty() {
@@ -289,6 +306,7 @@ mod tests {
         assert_eq!(cfg.codecs, "opus");
         assert_eq!(cfg.clipboard_write_delay, 80);
         assert_eq!(cfg.clipboard_restore_delay, 120);
+        assert_eq!(cfg.opacity, 1.0);
     }
 
     #[test]
@@ -318,6 +336,21 @@ mod tests {
     }
 
     #[test]
+    fn validates_opacity_range_and_step() {
+        let mut cfg = Config::default();
+        cfg.opacity = 0.1;
+        cfg.validate().unwrap();
+        cfg.opacity = 0.67;
+        cfg.validate().unwrap();
+        cfg.opacity = 0.09;
+        assert!(cfg.validate().unwrap_err().to_string().contains("OPACITY"));
+        cfg.opacity = 1.01;
+        assert!(cfg.validate().unwrap_err().to_string().contains("OPACITY"));
+        cfg.opacity = 0.105;
+        assert!(cfg.validate().unwrap_err().to_string().contains("OPACITY"));
+    }
+
+    #[test]
     fn round_trip_default_has_no_removed_field() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
@@ -328,5 +361,6 @@ mod tests {
         assert!(!raw.contains_key("NOTIFICATION"));
         assert!(!raw.contains_key("CANCEL_KEY"));
         assert!(raw.contains_key("CANCEL_OR_RETRY_KEY"));
+        assert_eq!(raw.get("OPACITY"), Some(&serde_json::json!(1.0)));
     }
 }

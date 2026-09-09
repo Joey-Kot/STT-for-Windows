@@ -30,6 +30,7 @@ defaults. Missing fields receive defaults and unknown fields are ignored.
 | `PROMPT` | `""` | Multipart field only when non-empty |
 | `TEXT_PATH` | `"text"` | Dot path with repeated array indexes |
 | `ExtraConfig` | `""` | Must be a JSON object when non-empty |
+| `OPACITY` | `1.0` | GUI floating-window opacity; `0.10`–`1.00` in `0.01` steps, where `1.0` is fully opaque |
 | `CHANNELS` | `1` | Inclusive range 1–8 |
 | `SAMPLING_RATE` | `16000` | Greater than zero |
 | `SAMPLING_RATE_DEPTH` | `16` | 8, 16, 24, or 32 |
@@ -192,6 +193,8 @@ WebView or embedded browser runtime.
 - Settings use native tab/edit/button/checkbox/combobox controls. Token is a
   password edit. Display languages are English, Simplified Chinese, German,
   Japanese, and French.
+- The Display page controls the shared opacity of the full and minimal floating
+  windows.
 - Config writes `%APPDATA%\stt\config.json`, then validates and reloads runtime
   dependencies/hotkeys. Saving is allowed only in Idle or Error.
 - Escape closes settings first; busy quit shows a native confirmation dialog.

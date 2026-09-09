@@ -59,6 +59,7 @@ const ID_FIELD_BASE: usize = 0x6200;
 const WM_SAVE_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 21;
 pub const WM_LANGUAGE_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 22;
 const WM_CONNECTIVITY_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 23;
+pub const WM_OPACITY_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 24;
 
 const WINDOW_WIDTH: i32 = 760;
 const WINDOW_HEIGHT: i32 = 620;
@@ -104,6 +105,12 @@ struct FieldSpec {
 }
 
 const FIELDS: &[FieldSpec] = &[
+    FieldSpec {
+        key: "OPACITY",
+        label: "Opacity",
+        group: "Display",
+        kind: FieldKind::Float,
+    },
     FieldSpec {
         key: "API_ENDPOINT",
         label: "API endpoint",
@@ -569,6 +576,13 @@ unsafe extern "system" fn settings_proc(
             enable_controls(state, true);
             match *result {
                 Ok(_) => unsafe {
+                    let alpha = platform::window_opacity_alpha(state.runtime.config().opacity);
+                    let _ = PostMessageW(
+                        Some(state.owner),
+                        WM_OPACITY_CHANGED,
+                        WPARAM(alpha as usize),
+                        LPARAM(0),
+                    );
                     let _ = DestroyWindow(hwnd);
                 },
                 Err(error) => show_error(hwnd, &error),
@@ -698,6 +712,7 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
         .insert(state.language_control.0 as usize, "Display");
 
     let mut group_y: HashMap<&'static str, i32> = HashMap::new();
+    group_y.insert("Display", 138);
     for (index, field) in FIELDS.iter().enumerate() {
         let y = *group_y.entry(field.group).or_insert(FIELD_TOP);
         let label = create_label(

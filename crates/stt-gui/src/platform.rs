@@ -41,6 +41,10 @@ pub fn unscale(value: i32, dpi: u32) -> i32 {
     ((i64::from(value) * 96 + i64::from(dpi / 2)) / i64::from(dpi.max(1))) as i32
 }
 
+pub fn window_opacity_alpha(opacity: f64) -> u8 {
+    (opacity.clamp(0.1, 1.0) * 255.0).round() as u8
+}
+
 pub fn supports_rounded_corners() -> bool {
     let mut buffer = [0_u16; 32];
     let mut bytes = (buffer.len() * std::mem::size_of::<u16>()) as u32;

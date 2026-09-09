@@ -15,7 +15,7 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowRect, HCURSOR,
-    HWND_TOPMOST, IDC_ARROW, IDOK, KillTimer, LWA_COLORKEY, LoadCursorW, MA_NOACTIVATE,
+    HWND_TOPMOST, IDC_ARROW, IDOK, KillTimer, LWA_ALPHA, LWA_COLORKEY, LoadCursorW, MA_NOACTIVATE,
     MB_ICONWARNING, MB_OKCANCEL, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW,
     SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SetLayeredWindowAttributes, SetTimer,
     SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CLOSE,
@@ -32,7 +32,7 @@ use crate::render::{
     hit_test_button,
 };
 use crate::resources;
-use crate::settings::{SettingsWindow, WM_LANGUAGE_CHANGED};
+use crate::settings::{SettingsWindow, WM_LANGUAGE_CHANGED, WM_OPACITY_CHANGED};
 use crate::taskbar;
 use crate::tray::{COMMAND_MINIMAL, COMMAND_QUIT, COMMAND_SETTINGS, TrayIcon, WM_TRAY};
 
@@ -177,8 +177,11 @@ fn run_inner() -> Result<(), String> {
         error.to_string()
     })?;
     unsafe {
-        SetLayeredWindowAttributes(hwnd, COLORREF(0), 255, LWA_COLORKEY)
-            .map_err(|error| error.to_string())?;
+        set_overlay_opacity(
+            hwnd,
+            platform::window_opacity_alpha(runtime.config().opacity),
+        )
+        .map_err(|error| error.to_string())?;
         platform::apply_corner_preference(hwnd, rounded);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
         let _ = taskbar::set_visible(hwnd, true);
@@ -453,6 +456,11 @@ unsafe extern "system" fn window_proc(
             }
             LRESULT(0)
         }
+        WM_OPACITY_CHANGED => {
+            let alpha = wparam.0.min(u8::MAX as usize) as u8;
+            let _ = set_overlay_opacity(hwnd, alpha);
+            LRESULT(0)
+        }
         WM_ESCAPE_COMMAND => {
             if !close_settings(state) {
                 request_quit(state);
@@ -481,6 +489,10 @@ unsafe extern "system" fn window_proc(
         }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
     }
+}
+
+fn set_overlay_opacity(hwnd: HWND, alpha: u8) -> windows::core::Result<()> {
+    unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_COLORKEY | LWA_ALPHA) }
 }
 
 fn show_tray_menu(state: &mut WindowState) {

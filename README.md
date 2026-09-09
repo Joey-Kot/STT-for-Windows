@@ -273,7 +273,7 @@ Full mode displays a taskbar tab. Minimal mode hides the taskbar tab while retai
 
 | Page | Contents |
 |---|---|
-| Display | Interface language and configuration file location |
+| Display | Interface language, configuration file location, and floating-window opacity |
 | API | Endpoint, token, model, language, prompt, text path, and extra fields |
 | Audio | Channels, sample rate, sample depth, bitrate, codec, and container |
 | Network | Timeout, retries, HTTP/2, and TLS verification |
@@ -438,6 +438,7 @@ The GUI and CLI use the same JSON data structure. Missing fields receive their d
   "PROMPT": "",
   "TEXT_PATH": "text",
   "ExtraConfig": "{\"response_format\":\"json\",\"temperature\":0}",
+  "OPACITY": 1.0,
   "CHANNELS": 1,
   "SAMPLING_RATE": 16000,
   "SAMPLING_RATE_DEPTH": 16,
@@ -466,6 +467,12 @@ The GUI and CLI use the same JSON data structure. Missing fields receive their d
 ```
 
 This is only a protocol example. The actual model name, fields, supported audio formats, and timeout should follow the requirements of the selected ASR service. Keep `VERIFY_SSL=true` for normal public services.
+
+### Display fields
+
+| Field | Default | Behavior |
+|---|---:|---|
+| `OPACITY` | `1.0` | GUI floating-window opacity. Allowed values are `0.10`–`1.00` in `0.01` steps; `1.0` is fully opaque. The setting applies to both full and minimal modes. |
 
 ### API and response fields
 

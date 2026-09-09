@@ -273,7 +273,7 @@ ffmpeg -version
 
 | 页面 | 内容 |
 |---|---|
-| Display | 界面语言和配置文件位置 |
+| Display | 界面语言、配置文件位置和浮窗透明度 |
 | API | 地址、Token、模型、语言、提示词、文本路径和额外字段 |
 | Audio | 声道、采样率、采样位深、比特率、编码器和容器 |
 | Network | 超时、重试、HTTP/2 和 TLS 校验 |
@@ -438,6 +438,7 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
   "PROMPT": "",
   "TEXT_PATH": "text",
   "ExtraConfig": "{\"response_format\":\"json\",\"temperature\":0}",
+  "OPACITY": 1.0,
   "CHANNELS": 1,
   "SAMPLING_RATE": 16000,
   "SAMPLING_RATE_DEPTH": 16,
@@ -466,6 +467,12 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
 ```
 
 这只是协议示例。实际模型名、字段、支持的音频格式和超时应以所使用的 ASR 服务为准。正常公网服务应保持 `VERIFY_SSL=true`。
+
+### 显示字段
+
+| 字段 | 默认值 | 行为 |
+|---|---:|---|
+| `OPACITY` | `1.0` | GUI 浮窗透明度。允许 `0.10`–`1.00`，步进 `0.01`；`1.0` 为完全不透明。完整模式和 minimal 模式共用此设置。 |
 
 ### API 与响应字段
 
