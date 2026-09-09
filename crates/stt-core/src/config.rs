@@ -337,8 +337,10 @@ mod tests {
 
     #[test]
     fn validates_opacity_range_and_step() {
-        let mut cfg = Config::default();
-        cfg.opacity = 0.1;
+        let mut cfg = Config {
+            opacity: 0.1,
+            ..Config::default()
+        };
         cfg.validate().unwrap();
         cfg.opacity = 0.67;
         cfg.validate().unwrap();
