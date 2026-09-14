@@ -256,6 +256,12 @@ const FIELDS: &[FieldSpec] = &[
         kind: FieldKind::Integer,
     },
     FieldSpec {
+        key: "USE_SENDINPUT",
+        label: "Use SendInput",
+        group: "Hotkeys",
+        kind: FieldKind::Boolean,
+    },
+    FieldSpec {
         key: "CACHE_DIR",
         label: "Cache dir",
         group: "Cache",
@@ -497,6 +503,7 @@ unsafe extern "system" fn settings_proc(
             {
                 let value = state.boolean_values.entry(key).or_default();
                 *value = !*value;
+                update_input_controls(state);
                 if let Some(control) = state.controls.get(key) {
                     unsafe {
                         let _ = InvalidateRect(Some(*control), None, true);
@@ -541,7 +548,22 @@ unsafe extern "system" fn settings_proc(
             let hdc = HDC(wparam.0 as *mut c_void);
             unsafe {
                 SetBkMode(hdc, TRANSPARENT);
-                SetTextColor(hdc, rgb(188, 202, 205));
+                let control = HWND(lparam.0 as *mut c_void);
+                let enabled =
+                    windows::Win32::UI::Input::KeyboardAndMouse::IsWindowEnabled(control).as_bool();
+                SetTextColor(
+                    hdc,
+                    if enabled {
+                        rgb(188, 202, 205)
+                    } else {
+                        rgb(110, 126, 130)
+                    },
+                );
+                if state.controls.values().any(|hwnd| *hwnd == control) {
+                    SetBkMode(hdc, windows::Win32::Graphics::Gdi::OPAQUE);
+                    SetBkColor(hdc, rgb(26, 35, 39));
+                    return LRESULT(state.input_brush.0 as isize);
+                }
             }
             LRESULT(state.background_brush.0 as isize)
         }
@@ -1688,6 +1710,7 @@ fn refresh_language(state: &SettingsState) {
 }
 
 fn update_page_visibility(state: &SettingsState) {
+    update_input_controls(state);
     let active = GROUPS
         .get(state.active_group)
         .map(|group| group.0)
@@ -2010,6 +2033,32 @@ fn enable_controls(state: &SettingsState, enabled: bool) {
     {
         unsafe {
             let _ = EnableWindow(*control, enabled);
+        }
+    }
+    update_input_controls(state);
+}
+
+fn update_input_controls(state: &SettingsState) {
+    let enabled = !state.saving
+        && !state
+            .boolean_values
+            .get("USE_SENDINPUT")
+            .copied()
+            .unwrap_or(false);
+    for key in ["CLIPBOARD_WRITE_DELAY", "CLIPBOARD_RESTORE_DELAY"] {
+        if let Some(control) = state.controls.get(key) {
+            unsafe {
+                let _ = EnableWindow(*control, enabled);
+                let _ = InvalidateRect(Some(*control), None, true);
+            }
+        }
+        for (label, label_key) in &state.localized_controls {
+            if *label_key == key {
+                unsafe {
+                    let _ = EnableWindow(*label, enabled);
+                    let _ = InvalidateRect(Some(*label), None, true);
+                }
+            }
         }
     }
 }

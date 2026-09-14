@@ -1,5 +1,45 @@
 use thiserror::Error;
 
+#[cfg(windows)]
+pub(crate) struct WindowsUnicode;
+
+#[cfg(windows)]
+impl WindowsUnicode {
+    pub(crate) fn modifiers_pressed(&self) -> bool {
+        use windows::Win32::UI::Input::KeyboardAndMouse::*;
+        [VK_SHIFT, VK_CONTROL, VK_MENU, VK_LWIN, VK_RWIN]
+            .iter()
+            .any(|key| unsafe { GetAsyncKeyState(key.0 as i32) < 0 })
+    }
+
+    pub(crate) fn send(&self, units: &[u16]) -> (usize, u32) {
+        use windows::Win32::{
+            Foundation::{GetLastError, SetLastError, WIN32_ERROR},
+            UI::Input::KeyboardAndMouse::*,
+        };
+        let events: Vec<INPUT> = units
+            .iter()
+            .flat_map(|unit| {
+                [KEYEVENTF_UNICODE, KEYEVENTF_UNICODE | KEYEVENTF_KEYUP].map(|flags| INPUT {
+                    r#type: INPUT_KEYBOARD,
+                    Anonymous: INPUT_0 {
+                        ki: KEYBDINPUT {
+                            wScan: *unit,
+                            dwFlags: flags,
+                            ..Default::default()
+                        },
+                    },
+                })
+            })
+            .collect();
+        unsafe {
+            SetLastError(WIN32_ERROR(0));
+            let sent = SendInput(&events, std::mem::size_of::<INPUT>() as i32);
+            (sent as usize, GetLastError().0)
+        }
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum KeyboardError {
     #[error("keyboard injection is only available on Windows")]

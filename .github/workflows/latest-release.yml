@@ -93,7 +93,7 @@ jobs:
 
       - name: Verify binary contracts
         run: |
-          if grep -R -n -E 'SendInput|\bbeeep\b|Toast' crates native; then
+          if grep -R -n -E '\bbeeep\b|Toast' crates native; then
             echo "A forbidden input or notification implementation is present." >&2
             exit 1
           fi
@@ -102,10 +102,9 @@ jobs:
             exit 1
           fi
           x86_64-w64-mingw32-objdump -x dist/gui/STT.exe | grep 'keybd_event'
-          if x86_64-w64-mingw32-objdump -x dist/gui/STT.exe | grep 'SendInput'; then
-            echo "GUI imports SendInput." >&2
-            exit 1
-          fi
+          x86_64-w64-mingw32-objdump -x dist/gui/STT.exe | grep 'SendInput'
+          x86_64-w64-mingw32-objdump -x dist/cli/stt.exe | grep 'SendInput'
+          x86_64-w64-mingw32-objdump -x dist/cli/stt.exe | grep 'keybd_event'
           if strings dist/gui/STT.exe | grep '\[ffmpeg\] executing: ffmpeg'; then
             echo "GUI contains the external FFmpeg backend." >&2
             exit 1

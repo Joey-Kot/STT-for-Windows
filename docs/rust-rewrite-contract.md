@@ -93,7 +93,7 @@ removed.
 
 ## Keyboard, clipboard, and hotkeys
 
-`Ctrl+V` uses `keybd_event`, never `SendInput`. The exact v1.1.2 sequence is:
+The default clipboard channel uses `keybd_event` for `Ctrl+V`. The exact v1.1.2 sequence is:
 
 1. virtual-key Ctrl down: `(0x11, 0x91, 0)`;
 2. scan-code V down: `(47, 175, KEYEVENTF_SCANCODE)`;
@@ -107,6 +107,17 @@ sends Ctrl+V, waits `CLIPBOARD_RESTORE_DELAY` milliseconds, and unconditionally
 tries to restore the old text. The defaults remain 80 ms and 120 ms. Both waits
 are cancellable. “Paste sent; clipboard restore failed” remains distinct from
 pre-paste failure.
+
+The current optional `USE_SENDINPUT` setting supersedes the original prohibition
+on SendInput. It defaults to false, including in older configuration files.
+When true, shared core output uses SendInput with KEYEVENTF_UNICODE, without
+clipboard access, clipboard delays, fallback, or automatic delivery retries.
+This applies to transcriptions and `[request failed]` text in GUI and CLI hotkey
+mode. CLI `--use-sendinput <BOOL>` overrides the setting. GUI Hotkeys exposes a
+checkbox below Restore delay and disables both clipboard delay controls while
+selected, retaining their values. Unicode scalars stay intact across batches;
+line endings normalize to CR, and tabs remain Unicode characters. Partial
+delivery and cancellation after delivery report that text may already exist.
 
 Hotkeys reject unknown or repeated modifiers and normalize aliases/casing for
 duplicate detection. RegisterHotKey mode uses `MOD_NOREPEAT`, a dedicated

@@ -164,6 +164,9 @@ struct Arguments {
         help_heading = "Hotkeys"
     )]
     hotkey_hook: Option<bool>,
+    /// Input Unicode text without the clipboard or fallback.
+    #[arg(long, value_name = "BOOL", action = ArgAction::Set, help_heading = "Hotkeys")]
+    use_sendinput: Option<bool>,
     /// Milliseconds to wait after writing the transcription before sending Ctrl+V.
     #[arg(long, value_name = "MS", help_heading = "Hotkeys")]
     clipboard_write_delay: Option<u64>,
@@ -249,6 +252,7 @@ impl Arguments {
             || self.pause_key.is_some()
             || self.cancel_or_retry_key.is_some()
             || self.hotkey_hook.is_some()
+            || self.use_sendinput.is_some()
             || self.clipboard_write_delay.is_some()
             || self.clipboard_restore_delay.is_some()
             || self.cache_dir.is_some()
@@ -284,6 +288,7 @@ impl Arguments {
         set(&mut config.pause_key, self.pause_key);
         set(&mut config.cancel_or_retry_key, self.cancel_or_retry_key);
         set(&mut config.hotkey_hook, self.hotkey_hook);
+        set(&mut config.use_sendinput, self.use_sendinput);
         set(
             &mut config.clipboard_write_delay,
             self.clipboard_write_delay,
@@ -376,6 +381,24 @@ mod tests {
     use clap::{CommandFactory, Parser};
 
     use super::*;
+
+    #[test]
+    fn sendinput_override_is_bidirectional_and_optional() {
+        let mut config = Config {
+            use_sendinput: true,
+            ..Config::default()
+        };
+        Arguments::try_parse_from(["stt"])
+            .unwrap()
+            .apply(&mut config);
+        assert!(config.use_sendinput);
+        for value in ["false", "true"] {
+            let args = Arguments::try_parse_from(["stt", "--use-sendinput", value]).unwrap();
+            assert!(args.has_config_override());
+            args.apply(&mut config);
+            assert_eq!(config.use_sendinput, value == "true");
+        }
+    }
 
     #[test]
     fn standard_boolean_values_and_alias_apply() {

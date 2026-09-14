@@ -88,8 +88,11 @@ flowchart LR
     FFmpeg --> Request
     Request --> Extract["JSON + TEXT_PATH"]
 
-    Extract -->|快捷键/GUI 模式| Clipboard["CF_UNICODETEXT<br/>Ctrl+V + 恢复"]
+    Extract -->|快捷键/GUI 模式| Channel{USE_SENDINPUT}
+    Channel -->|false，默认| Clipboard["CF_UNICODETEXT<br/>Ctrl+V + 恢复"]
+    Channel -->|true| Unicode["SendInput Unicode<br/>不使用剪贴板，无回退"]
     Clipboard --> App["当前前台应用"]
+    Unicode --> App
     Extract -->|文件模式| TextFile["文本文件"]
 ```
 
@@ -137,13 +140,40 @@ sequenceDiagram
     else HTTP 200
         ASR-->>Runtime: JSON 响应
         Runtime->>Runtime: 按 TEXT_PATH 提取文本
-        Runtime->>Clipboard: 保存原文本并写入识别结果
-        Clipboard->>App: keybd_event 发送 Ctrl+V
-        Runtime->>Clipboard: 恢复原剪贴板文本
-        Runtime-->>Control: Idle
+        Note over Runtime,App: 通过 core 统一入口输出；输入期间仍处于 Uploading
+        alt USE_SENDINPUT=true
+            Runtime->>Runtime: 等待修饰键释放，按 UTF-16 分批发送
+            Runtime->>App: SendInput Unicode（不使用剪贴板，无回退）
+            Note over Runtime,App: 批次间检查取消；已注入事件无法撤回
+        else 默认剪贴板通道
+            Runtime->>Clipboard: 保存原文本并写入识别结果
+            Clipboard->>App: keybd_event 发送 Ctrl+V
+            Runtime->>Clipboard: 恢复原剪贴板文本
+        end
+        alt 输入成功
+            Runtime-->>Control: Idle / 已粘贴或文本输入已发送
+        else 剪贴板操作取消或 SendInput 尚未发送时取消
+            Runtime-->>Control: Idle / 请求已取消
+        else 输入失败、部分发送、发送后取消或剪贴板恢复失败
+            Note over Runtime,Control: 显示具体错误；部分发送提示可能已有文本，不自动重发
+            alt 有重试缓冲
+                Runtime-->>Control: Idle / 可手动重试
+            else 无重试缓冲
+                Runtime-->>Control: Error
+            end
+        end
     else 请求最终失败
         ASR-->>Runtime: 非 200 或网络错误
-        Runtime-->>Control: Idle / 可重试
+        opt 重试耗尽且启用请求失败提示
+            Runtime->>App: 经所选通道输出 [request failed]
+        end
+        alt 已取消
+            Runtime-->>Control: Idle / 请求已取消
+        else 有重试缓冲
+            Runtime-->>Control: Idle / 可手动重试
+        else 无重试缓冲
+            Runtime-->>Control: Error
+        end
     end
 
     opt 存在可重试录音
@@ -174,11 +204,19 @@ stateDiagram-v2
     Recording --> Idle: 取消录音
     Paused --> Idle: 取消录音
 
-    Uploading --> Idle: 粘贴成功
+    Uploading --> Idle: 剪贴板粘贴成功或 SendInput 发送完成
     Uploading --> Idle: 识别结果为空
-    Uploading --> Idle: 手动取消请求
-    Uploading --> Idle: 转换、上传或粘贴失败且有重试缓冲
-    Uploading --> Error: 转换、上传或粘贴失败且无重试缓冲
+    Uploading --> Idle: 转换或请求取消、剪贴板操作取消、SendInput 发送前取消
+    Uploading --> Idle: 处理失败且有重试缓冲
+    Uploading --> Error: 处理失败且无重试缓冲
+
+    note right of Uploading
+        包含转换、ASR 请求和文本输出
+        处理失败包括转换或上传失败、输入失败、
+        剪贴板恢复失败、SendInput 部分发送或发送后取消
+        部分发送或发送后取消提示可能已有文本
+        无自动通道回退或文本重发
+    end note
 
     Error --> Idle: 保存有效设置
 ```
@@ -277,7 +315,7 @@ ffmpeg -version
 | API | 地址、Token、模型、语言、提示词、文本路径和额外字段 |
 | Audio | 声道、采样率、采样位深、比特率、编码器和容器 |
 | Network | 超时、重试、HTTP/2 和 TLS 校验 |
-| Hotkeys | 三个快捷键、低级键盘钩子开关和两个剪贴板等待时间 |
+| Hotkeys | 三个快捷键、低级键盘钩子开关、两个剪贴板等待时间和使用 SendInput 开关 |
 | Cache | 缓存目录、缓存保留和请求失败占位文本 |
 | Debug | FFmpeg、录音、快捷键和上传调试 |
 | About | 项目、作者、许可证和仓库信息 |
@@ -401,6 +439,7 @@ ffmpeg -version
 | `--hotkey-hook <BOOL>` | 选择低级键盘钩子或 `RegisterHotKey` |
 | `--clipboard-write-delay <MS>` | 覆盖写入识别文本后、发送 `Ctrl+V` 前的等待时间 |
 | `--clipboard-restore-delay <MS>` | 覆盖发送 `Ctrl+V` 后、恢复原剪贴板前的等待时间 |
+| `--use-sendinput <BOOL>` | 覆盖 `USE_SENDINPUT`；直接输入 Unicode 文本，不使用剪贴板，无回退 |
 
 #### Cache
 
@@ -519,6 +558,7 @@ GUI 静态构建覆盖的常用输出包括 Opus/Ogg、MP3、AAC、FLAC、Vorbis
 | `CANCEL_OR_RETRY_KEY` | `"alt+esc"` | 取消录音或当前识别请求；空闲且存在可重试录音时重试 |
 | `CLIPBOARD_WRITE_DELAY` | `80` | 写入识别文本后、发送 `Ctrl+V` 前的等待时间，单位毫秒 |
 | `CLIPBOARD_RESTORE_DELAY` | `120` | 发送 `Ctrl+V` 后、恢复原剪贴板前的等待时间，单位毫秒 |
+| `USE_SENDINPUT` | `false` | GUI 和 CLI 快捷键模式使用 core 的 Unicode 直接输入通道 |
 | `CACHE_DIR` | `""` | 非空时尝试创建并转换为绝对路径；失败时回退当前目录并清空设置值 |
 | `KEEP_CACHE` | `false` | 只有 `CACHE_DIR` 非空且可用时才保留缓存 |
 | `REQUEST_FAILED_NOTIFICATION` | `false` | 重试耗尽后粘贴 `[request failed]`；不会发送系统通知 |
@@ -636,7 +676,7 @@ data.items[0][1].text
 
 ## 剪贴板与自动粘贴
 
-Windows GUI 和快捷键模式使用 `CF_UNICODETEXT`：
+默认情况下（`USE_SENDINPUT=false`），Windows GUI 和快捷键模式使用 `CF_UNICODETEXT`：
 
 1. 读取并保存当前剪贴板文本。
 2. 写入识别结果。
@@ -647,7 +687,11 @@ Windows GUI 和快捷键模式使用 `CF_UNICODETEXT`：
 
 两个等待时间位于 GUI 的 `Hotkeys` 页面，也可以通过同名 JSON 字段或 CLI 的 `Hotkeys` 参数组设置。配置中缺少字段时仍使用 80 ms 和 120 ms。
 
-项目明确不使用 `SendInput`。如果粘贴快捷键已经发送，但恢复原剪贴板失败，程序会把它与“粘贴前失败”区分显示。
+如果粘贴快捷键已经发送，但恢复原剪贴板失败，程序会把它与“粘贴前失败”区分显示。
+
+在 Hotkeys 页面恢复等待项下方开启“使用 SendInput”，或设置 `USE_SENDINPUT=true`、传入 `--use-sendinput true`，即可直接输入 Unicode 文本。旧配置缺少字段时默认关闭。识别结果、用户主动重试后的结果和 `[request failed]` 提示均遵守此设置；标准输出和文件输出不受影响。开启时两个剪贴板等待项置灰，保留原值。
+
+新通道不读写剪贴板，不自动回退或重发。文本按 UTF-16 分批发送，批次不会拆开代理对。CRLF 和 LF 统一为 CR；换行和 Tab 发送 Unicode 字符事件，不模拟物理 Enter/Tab 按键，实际效果仍取决于目标控件。修饰键未释放时最多等待两秒；取消停止后续批次，已输入内容无法撤回。部分发送会明确提示可能已有文本。API 成功表示事件已注入，不代表目标控件已接收；输入焦点、控件兼容性和 Windows 权限限制仍然适用。
 
 ## 缓存与临时文件
 
@@ -719,7 +763,7 @@ GitHub Actions 还会检查：
 - Windows API 与 MinGW 目标编译。
 - PortAudio 后端必须包含 WMME 且不包含 WASAPI。
 - FFmpeg 构建不得启用 `nonfree`。
-- GUI 不得导入 `SendInput`。
+- CLI 和 GUI 均包含 `keybd_event` 和 `SendInput`，支持两种可选输入通道。
 - GUI 不得包含外部 FFmpeg 后端。
 - GUI 不得动态依赖 PortAudio 或 libav DLL。
 - `NOTICE` 与 `THIRD_PARTY_LICENSES/` 必须完整。
@@ -745,7 +789,7 @@ GitHub Actions 还会检查：
 - CLI 转换：外部 `ffmpeg.exe`，取消时终止子进程。
 - GUI：Win32 消息循环、Direct2D、DirectWrite 和原生控件；不嵌入 WebView。
 - 托盘：`Shell_NotifyIconW`；不发送托盘气泡。
-- 粘贴：`keybd_event`；不使用 `SendInput`。
+- 默认粘贴：`keybd_event`；可选 Unicode 直接输入：`SendInput`。
 - 通知：不提供 Windows 系统通知。
 - 配置：保存前验证，缺失字段使用默认值，未知字段忽略。
 

@@ -132,6 +132,17 @@ const ENGLISH: &[(&str, &str)] = &[
     ("HOTKEY_HOOK", "Low-level hook"),
     ("CLIPBOARD_WRITE_DELAY", "Paste delay (ms)"),
     ("CLIPBOARD_RESTORE_DELAY", "Restore delay (ms)"),
+    ("USE_SENDINPUT", "Use SendInput"),
+    ("Text input sent", "Text input sent"),
+    ("Text input failed", "Text input failed"),
+    (
+        "Input incomplete; text may already be present",
+        "Input incomplete; text may already be present",
+    ),
+    (
+        "Input canceled; text may already be present",
+        "Input canceled; text may already be present",
+    ),
     ("CACHE_DIR", "Cache dir"),
     ("KEEP_CACHE", "Keep cache"),
     ("REQUEST_FAILED_NOTIFICATION", "Request failed placeholder"),
@@ -198,6 +209,17 @@ const CHINESE: &[(&str, &str)] = &[
     ("HOTKEY_HOOK", "低级键盘钩子"),
     ("CLIPBOARD_WRITE_DELAY", "粘贴前等待（毫秒）"),
     ("CLIPBOARD_RESTORE_DELAY", "恢复前等待（毫秒）"),
+    ("USE_SENDINPUT", "使用 SendInput"),
+    ("Text input sent", "文本输入已发送"),
+    ("Text input failed", "文本输入失败"),
+    (
+        "Input incomplete; text may already be present",
+        "输入未完成，可能已有部分文本",
+    ),
+    (
+        "Input canceled; text may already be present",
+        "输入已取消，可能已有部分文本",
+    ),
     ("CACHE_DIR", "缓存目录"),
     ("KEEP_CACHE", "保留缓存"),
     ("REQUEST_FAILED_NOTIFICATION", "请求失败占位提示"),
@@ -270,6 +292,17 @@ const GERMAN: &[(&str, &str)] = &[
     ("HOTKEY_HOOK", "Low-Level-Hook"),
     ("CLIPBOARD_WRITE_DELAY", "Einfügen (ms)"),
     ("CLIPBOARD_RESTORE_DELAY", "Wiederherst. (ms)"),
+    ("USE_SENDINPUT", "SendInput verwenden"),
+    ("Text input sent", "Texteingabe gesendet"),
+    ("Text input failed", "Texteingabe fehlgeschlagen"),
+    (
+        "Input incomplete; text may already be present",
+        "Eingabe unvollständig; Text möglicherweise bereits vorhanden",
+    ),
+    (
+        "Input canceled; text may already be present",
+        "Eingabe abgebrochen; Text möglicherweise bereits vorhanden",
+    ),
     ("CACHE_DIR", "Cache-Verzeichnis"),
     ("KEEP_CACHE", "Cache behalten"),
     (
@@ -342,6 +375,17 @@ const JAPANESE: &[(&str, &str)] = &[
     ("HOTKEY_HOOK", "低レベルフック"),
     ("CLIPBOARD_WRITE_DELAY", "貼り付け前の待機 (ms)"),
     ("CLIPBOARD_RESTORE_DELAY", "復元前の待機 (ms)"),
+    ("USE_SENDINPUT", "SendInput を使用"),
+    ("Text input sent", "テキスト入力を送信しました"),
+    ("Text input failed", "テキスト入力に失敗しました"),
+    (
+        "Input incomplete; text may already be present",
+        "入力は未完了です。一部のテキストが入力済みの可能性があります",
+    ),
+    (
+        "Input canceled; text may already be present",
+        "入力をキャンセルしました。一部のテキストが入力済みの可能性があります",
+    ),
     ("CACHE_DIR", "キャッシュディレクトリ"),
     ("KEEP_CACHE", "キャッシュを保持"),
     (
@@ -420,6 +464,17 @@ const FRENCH: &[(&str, &str)] = &[
     ("HOTKEY_HOOK", "Hook bas niveau"),
     ("CLIPBOARD_WRITE_DELAY", "Collage (ms)"),
     ("CLIPBOARD_RESTORE_DELAY", "Restauration (ms)"),
+    ("USE_SENDINPUT", "Utiliser SendInput"),
+    ("Text input sent", "Saisie de texte envoyée"),
+    ("Text input failed", "Échec de la saisie"),
+    (
+        "Input incomplete; text may already be present",
+        "Saisie incomplète ; du texte peut déjà être présent",
+    ),
+    (
+        "Input canceled; text may already be present",
+        "Saisie annulée ; du texte peut déjà être présent",
+    ),
     ("CACHE_DIR", "Dossier du cache"),
     ("KEEP_CACHE", "Conserver le cache"),
     (

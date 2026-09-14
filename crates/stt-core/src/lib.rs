@@ -8,5 +8,6 @@ pub mod jsonpath;
 pub mod keyboard;
 pub mod recorder;
 pub mod runtime;
+pub mod text_input;
 
 pub use config::Config;

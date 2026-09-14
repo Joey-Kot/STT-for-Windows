@@ -13,10 +13,11 @@ use tokio_util::sync::CancellationToken;
 use crate::Config;
 use crate::asr::{AsrClient, AsrError, Transcription};
 use crate::cache;
-use crate::clipboard::{self, ClipboardError};
+use crate::clipboard::ClipboardError;
 use crate::converter::{AudioConverter, ConvertError};
 use crate::hotkey::{self, HotkeyRegistration};
 use crate::recorder::{Recorder, RecorderError, RecorderState, RecordingResult};
+use crate::text_input;
 
 const SHUTDOWN_GRACE_PERIOD: Duration = Duration::from_millis(250);
 const SHUTDOWN_POLL_INTERVAL: Duration = Duration::from_millis(5);
@@ -683,8 +684,6 @@ impl Runtime {
             let inner = self.inner.lock();
             (inner.config.clone(), inner.asr_client.clone())
         };
-        let clipboard_write_delay = Duration::from_millis(config.clipboard_write_delay);
-        let clipboard_restore_delay = Duration::from_millis(config.clipboard_restore_delay);
         let output_path = cache::recording_output_path(&wav_path, &config.container);
         if let Err(error) = self
             .converter
@@ -755,13 +754,7 @@ impl Runtime {
                     self.set_state(State::Idle, "Empty result from ASR", None::<&RuntimeError>);
                     return;
                 }
-                let paste = clipboard::paste_text(
-                    &transcription.text,
-                    cancellation,
-                    clipboard_write_delay,
-                    clipboard_restore_delay,
-                )
-                .await;
+                let paste = text_input::send_text(&transcription.text, cancellation, &config).await;
                 clean_up_recording_attempt(
                     &config,
                     cache_attempt,
@@ -771,18 +764,20 @@ impl Runtime {
                     &transcription.raw_response,
                 );
                 match paste {
-                    Ok(()) if !self.is_stopped() => {
-                        self.set_state(State::Idle, "Transcription pasted", None::<&RuntimeError>)
-                    }
-                    Err(ClipboardError::Canceled) if !self.is_stopped() => {
+                    Ok(()) if !self.is_stopped() => self.set_state(
+                        State::Idle,
+                        if config.use_sendinput {
+                            "Text input sent"
+                        } else {
+                            "Transcription pasted"
+                        },
+                        None::<&RuntimeError>,
+                    ),
+                    Err(error) if error.canceled_before_output() && !self.is_stopped() => {
                         self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>)
                     }
                     Err(error) if !self.is_stopped() => {
-                        let message = if error.paste_was_sent_before_restore_failure() {
-                            "Paste sent; clipboard restore failed"
-                        } else {
-                            "Paste failed"
-                        };
+                        let message = error.status();
                         self.set_retryable_error(message, &error);
                     }
                     _ => {}
@@ -819,17 +814,12 @@ impl Runtime {
                 let raw = error.last_response().to_vec();
                 if config.request_failed_notification
                     && error.is_retry_exhausted()
-                    && let Err(paste_error) = clipboard::paste_text(
-                        "[request failed]",
-                        cancellation,
-                        clipboard_write_delay,
-                        clipboard_restore_delay,
-                    )
-                    .await
+                    && let Err(paste_error) =
+                        text_input::send_text("[request failed]", cancellation, &config).await
                     && !self.is_stopped()
                     && !cancellation.is_cancelled()
                 {
-                    eprintln!("[paste] failed: {paste_error}");
+                    eprintln!("[text input] failed: {paste_error}");
                 }
                 clean_up_recording_attempt(
                     &config,

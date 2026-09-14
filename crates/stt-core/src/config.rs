@@ -51,6 +51,8 @@ pub struct Config {
     pub verify_ssl: bool,
     #[serde(rename = "HOTKEY_HOOK")]
     pub hotkey_hook: bool,
+    #[serde(rename = "USE_SENDINPUT")]
+    pub use_sendinput: bool,
     #[serde(rename = "START_KEY")]
     pub start_key: String,
     #[serde(rename = "PAUSE_KEY")]
@@ -100,6 +102,7 @@ impl Default for Config {
             enable_http2: true,
             verify_ssl: true,
             hotkey_hook: true,
+            use_sendinput: false,
             start_key: "ctrl+alt+q".into(),
             pause_key: "ctrl+alt+s".into(),
             cancel_or_retry_key: "alt+esc".into(),
@@ -306,6 +309,13 @@ mod tests {
         assert_eq!(cfg.codecs, "opus");
         assert_eq!(cfg.clipboard_write_delay, 80);
         assert_eq!(cfg.clipboard_restore_delay, 120);
+        assert!(!cfg.use_sendinput);
+        let enabled: Config = serde_json::from_str(r#"{"USE_SENDINPUT":true}"#).unwrap();
+        assert!(enabled.use_sendinput);
+        assert_eq!(
+            serde_json::to_value(enabled).unwrap()["USE_SENDINPUT"],
+            true
+        );
         assert_eq!(cfg.opacity, 1.0);
     }
 

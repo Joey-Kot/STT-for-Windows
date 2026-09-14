@@ -88,8 +88,11 @@ flowchart LR
     FFmpeg --> Request
     Request --> Extract["JSON + TEXT_PATH"]
 
-    Extract -->|Hotkey/GUI mode| Clipboard["CF_UNICODETEXT<br/>Ctrl+V + restore"]
+    Extract -->|Hotkey/GUI mode| Channel{USE_SENDINPUT}
+    Channel -->|false, default| Clipboard["CF_UNICODETEXT<br/>Ctrl+V + restore"]
+    Channel -->|true| Unicode["SendInput Unicode<br/>No clipboard or fallback"]
     Clipboard --> App["Current foreground app"]
+    Unicode --> App
     Extract -->|File mode| TextFile["Text file"]
 ```
 
@@ -137,13 +140,40 @@ sequenceDiagram
     else HTTP 200
         ASR-->>Runtime: JSON response
         Runtime->>Runtime: Extract text through TEXT_PATH
-        Runtime->>Clipboard: Save original text and write transcription
-        Clipboard->>App: Send Ctrl+V through keybd_event
-        Runtime->>Clipboard: Restore original clipboard text
-        Runtime-->>Control: Idle
+        Note over Runtime,App: Shared core output entry<br/>State remains Uploading during input
+        alt USE_SENDINPUT=true
+            Runtime->>Runtime: Wait for modifier release and send UTF-16 batches
+            Runtime->>App: SendInput Unicode (no clipboard, no fallback)
+            Note over Runtime,App: Check cancellation between batches<br/>Injected events cannot be recalled
+        else Default clipboard channel
+            Runtime->>Clipboard: Save original text and write transcription
+            Clipboard->>App: Send Ctrl+V through keybd_event
+            Runtime->>Clipboard: Restore original clipboard text
+        end
+        alt Input succeeded
+            Runtime-->>Control: Idle / Transcription pasted or Text input sent
+        else Clipboard operation canceled or SendInput canceled before delivery
+            Runtime-->>Control: Idle / Request canceled
+        else Input failed, partial delivery, cancellation after delivery or clipboard restore failed
+            Note over Runtime,Control: Report the specific error<br/>Partial delivery warns text may exist, without automatic resend
+            alt Retry buffer available
+                Runtime-->>Control: Idle / Manual retry available
+            else No retry buffer
+                Runtime-->>Control: Error
+            end
+        end
     else Request ultimately fails
         ASR-->>Runtime: Non-200 response or network error
-        Runtime-->>Control: Idle / retry available
+        opt Retries exhausted and request-failure placeholder enabled
+            Runtime->>App: Output [request failed] through the selected channel
+        end
+        alt Canceled
+            Runtime-->>Control: Idle / Request canceled
+        else Retry buffer available
+            Runtime-->>Control: Idle / Manual retry available
+        else No retry buffer
+            Runtime-->>Control: Error
+        end
     end
 
     opt Retry is available
@@ -174,11 +204,19 @@ stateDiagram-v2
     Recording --> Idle: Cancel recording
     Paused --> Idle: Cancel recording
 
-    Uploading --> Idle: Paste succeeded
+    Uploading --> Idle: Clipboard paste succeeded or SendInput delivery completed
     Uploading --> Idle: Empty transcription
-    Uploading --> Idle: Request canceled manually
-    Uploading --> Idle: Conversion, upload, or paste failed with retry buffer
-    Uploading --> Error: Conversion, upload, or paste failed without retry buffer
+    Uploading --> Idle: Conversion or request canceled, clipboard canceled, or SendInput canceled before delivery
+    Uploading --> Idle: Processing failed with retry buffer
+    Uploading --> Error: Processing failed without retry buffer
+
+    note right of Uploading
+        Includes conversion, ASR requests and text output
+        Processing failures include conversion or upload failure, input failure,
+        clipboard restore failure, partial SendInput delivery or cancellation after delivery
+        Partial delivery or cancellation after delivery warns text may already exist
+        No automatic channel fallback or text resend
+    end note
 
     Error --> Idle: Valid settings saved
 ```
@@ -277,7 +315,7 @@ Full mode displays a taskbar tab. Minimal mode hides the taskbar tab while retai
 | API | Endpoint, token, model, language, prompt, text path, and extra fields |
 | Audio | Channels, sample rate, sample depth, bitrate, codec, and container |
 | Network | Timeout, retries, HTTP/2, and TLS verification |
-| Hotkeys | Three hotkeys, the low-level keyboard hook switch, and two clipboard wait intervals |
+| Hotkeys | Three hotkeys, low-level hook, clipboard wait intervals, and Use SendInput |
 | Cache | Cache directory, cache retention, and request-failure placeholder text |
 | Debug | FFmpeg, recording, hotkey, and upload diagnostics |
 | About | Project, author, license, and repository information |
@@ -401,6 +439,7 @@ If `--output` is omitted, the default output is `<input-file-name>.txt` in the c
 | `--hotkey-hook <BOOL>` | Selects the low-level keyboard hook or `RegisterHotKey` |
 | `--clipboard-write-delay <MS>` | Overrides the wait after writing the transcription and before sending `Ctrl+V` |
 | `--clipboard-restore-delay <MS>` | Overrides the wait after sending `Ctrl+V` and before restoring the original clipboard |
+| `--use-sendinput <BOOL>` | Overrides `USE_SENDINPUT`; direct Unicode input without clipboard access or fallback |
 
 #### Cache
 
@@ -519,6 +558,7 @@ Common outputs covered by the static GUI build include Opus/Ogg, MP3, AAC, FLAC,
 | `CANCEL_OR_RETRY_KEY` | `"alt+esc"` | Cancels recording or the active transcription request; when idle with a retryable recording, retries it |
 | `CLIPBOARD_WRITE_DELAY` | `80` | Milliseconds between writing the transcription and sending `Ctrl+V` |
 | `CLIPBOARD_RESTORE_DELAY` | `120` | Milliseconds between sending `Ctrl+V` and restoring the original clipboard |
+| `USE_SENDINPUT` | `false` | Use shared core Unicode input instead of the clipboard in GUI and CLI hotkey mode |
 | `CACHE_DIR` | `""` | When non-empty, attempts to create it and convert it to an absolute path; on failure, falls back to the current directory and clears the setting |
 | `KEEP_CACHE` | `false` | Retains cache files only when `CACHE_DIR` is non-empty and usable |
 | `REQUEST_FAILED_NOTIFICATION` | `false` | Pastes `[request failed]` after retries are exhausted; does not send a system notification |
@@ -636,7 +676,7 @@ When `HOTKEY_HOOK=false`, the application uses `RegisterHotKey` with `MOD_NOREPE
 
 ## Clipboard and automatic paste
 
-The Windows GUI and hotkey mode use `CF_UNICODETEXT`:
+By default (`USE_SENDINPUT=false`), the Windows GUI and hotkey mode use `CF_UNICODETEXT`:
 
 1. Read and save the current clipboard text.
 2. Write the transcription.
@@ -647,7 +687,11 @@ The Windows GUI and hotkey mode use `CF_UNICODETEXT`:
 
 Both wait intervals are available on the GUI `Hotkeys` page and through the corresponding JSON fields or CLI `Hotkeys` option group. Missing fields retain the 80 ms and 120 ms defaults.
 
-The project explicitly does not use `SendInput`. If the paste shortcut was sent but restoration of the original clipboard failed, the application distinguishes that condition from a failure before paste.
+If the paste shortcut was sent but restoration of the original clipboard failed, the application distinguishes that condition from a failure before paste.
+
+Enable `Use SendInput` below Restore delay on the Hotkeys page, set `USE_SENDINPUT=true`, or pass `--use-sendinput true` to input Unicode text directly. The option defaults to false for old configurations too. It applies to recognition results, user-initiated retries and `[request failed]` text; stdout/file output is unchanged. Both clipboard delays are disabled in the GUI while selected, with their values retained.
+
+This channel never reads or writes the clipboard and never falls back or automatically resends text. UTF-16 characters are sent in bounded batches without splitting surrogate pairs. CRLF and LF normalize to CR; newline and Tab use Unicode character events, not physical Enter/Tab presses. Control-specific handling still requires testing. Held modifiers are given up to two seconds to release; cancellation stops subsequent batches. Partial delivery reports that text may already be present. The API confirms event injection, not receipt by the target control. Focus, application support and Windows integrity-level restrictions still apply.
 
 ## Cache and temporary files
 
@@ -719,7 +763,7 @@ GitHub Actions also verifies:
 - Windows API and MinGW target compilation.
 - The PortAudio backend includes WMME and excludes WASAPI.
 - The FFmpeg build does not enable `nonfree`.
-- The GUI does not import `SendInput`.
+- CLI and GUI include both `keybd_event` and `SendInput` for the two selectable input channels.
 - The GUI does not contain the external FFmpeg backend.
 - The GUI has no dynamic dependency on PortAudio or libav DLLs.
 - `NOTICE` and `THIRD_PARTY_LICENSES/` are complete.
@@ -745,7 +789,7 @@ After a successful build, the workflow updates the `Latest` tag and Release, the
 - CLI conversion: external `ffmpeg.exe`; cancellation terminates the child process.
 - GUI: Win32 message loop, Direct2D, DirectWrite, and native controls; no embedded WebView.
 - Tray: `Shell_NotifyIconW`; no tray balloons.
-- Paste: `keybd_event`; `SendInput` is not used.
+- Default paste: `keybd_event`; optional direct Unicode input: `SendInput`.
 - Notifications: no Windows system notifications.
 - Configuration: validated before saving; missing fields use defaults, and unknown fields are ignored.
 
