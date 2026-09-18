@@ -7,7 +7,7 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
 项目包含两个 Rust 程序：
 
 - `STT.exe`：原生 Win32 图形界面，静态链接 PortAudio 和裁剪版 FFmpeg/libav，解压即可运行。
-- `stt.exe`：命令行程序，支持快捷键录音和现有音频文件转写，音频转换调用 `PATH` 中的 `ffmpeg.exe`。
+- `stt.exe`：命令行程序，支持快捷键录音和现有音频文件转写，与 GUI 共用内嵌 libav 转换器，无需安装系统 FFmpeg。
 
 当前使用 Rust、Win32、Direct2D 和 DirectWrite 实现。
 
@@ -28,7 +28,7 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
   - 支持 Bearer Token、模型、语言、提示词和自定义表单字段。
   - 支持请求超时、指数退避重试、HTTP/2 和 TLS 证书校验。
 - **可取消的处理链路**
-  - 录音、外部 FFmpeg 转换、HTTP 上传、响应读取、重试等待和剪贴板等待均接入取消机制。
+  - 录音、内嵌 FFmpeg 转换、HTTP 上传、响应读取、重试等待和剪贴板等待均接入取消机制。
   - 请求处于 `Uploading` 状态时，GUI 保持取消按钮可用；两个程序均保持取消或重试快捷键可用。
 - **录音重试**
   - GUI 和 CLI 的快捷键模式仅在进程内保存最近一条已结束录音，大小上限为 100,000,000 字节；退出程序时释放。
@@ -36,9 +36,9 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
 - **自动提取与粘贴**
   - 使用 `TEXT_PATH` 从 JSON 响应中读取文本，支持多层对象和重复数组索引。
   - 暂存原剪贴板文本，发送 `Ctrl+V` 后再尝试恢复。
-- **GUI 与 CLI 双后端**
-  - GUI 静态链接 libav，不搜索或启动外部 FFmpeg。
-  - CLI 使用系统 `PATH` 中的 `ffmpeg.exe`，便于独立更新编码器。
+- **共享内嵌音频处理**
+  - 两个程序均静态链接 libav，不搜索或启动外部 FFmpeg。
+  - 可选 Earshot VAD 在 16 kHz 单声道支路检测语音，裁剪使用原始音频。
 - **缓存与诊断**
   - 可选择保留原始 WAV、转码音频和成功响应。
   - 提供录音、转换、快捷键和上传调试输出。
@@ -57,12 +57,11 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
 | 日常桌面使用、希望通过浮窗配置和操作 | `STT.exe` GUI |
 | 自动化、脚本调用、终端快捷键录音 | `stt.exe` CLI |
 | 转写已有音频并输出文本文件 | `stt.exe` CLI |
-| 不想安装 FFmpeg | `STT.exe` GUI |
-| 希望自行管理或替换 FFmpeg | `stt.exe` CLI |
+| 不想安装 FFmpeg | GUI 或 CLI |
 
 ## 架构
 
-`stt-core` 负责配置、录音、状态机、ASR、缓存、快捷键和剪贴板。GUI 与 CLI 只提供不同的交互方式和音频转换后端。
+`stt-core` 负责配置、录音、状态机、ASR、缓存、快捷键和剪贴板。GUI 与 CLI 只提供不同的交互方式，共用音频处理实现。
 
 ```mermaid
 flowchart LR
@@ -82,12 +81,10 @@ flowchart LR
     WAV --> Convert["录音音频转换抽象"]
     WAV --> RetryBuffer["GUI 和 CLI 重试缓冲<br/>最近一条已结束 WAV，仅内存，≤100 MB"]
     RetryBuffer -->|重试| Convert
-    Convert -->|GUI| LibAv["静态 libav"]
-    Convert -->|CLI| FFmpeg["外部 ffmpeg.exe"]
-    FilePipeline --> FFmpeg
+    Convert --> LibAv["共享内嵌 libav + 可选 Earshot VAD"]
+    FilePipeline --> LibAv
 
     LibAv --> Request["ASR multipart 请求"]
-    FFmpeg --> Request
     Request --> Extract["JSON + TEXT_PATH"]
 
     Extract -->|快捷键/GUI 模式| Channel{USE_SENDINPUT}
@@ -98,7 +95,7 @@ flowchart LR
     Extract -->|文件模式| TextFile["文本文件"]
 ```
 
-GUI 和 CLI 共用相同的配置格式与 ASR 请求语义。两者的主要差别是界面、配置文件位置以及转换后端。
+GUI 和 CLI 共用相同的配置格式与 ASR 请求语义。两者的主要差别是界面和配置文件位置。
 
 ## 录音与识别流程
 
@@ -108,7 +105,7 @@ sequenceDiagram
     participant Control as GUI / 全局快捷键
     participant Runtime as Rust 状态机
     participant Recorder as PortAudio
-    participant Converter as libav / ffmpeg.exe
+    participant Converter as 内嵌 libav
     participant ASR as ASR HTTP API
     participant Clipboard as Windows 剪贴板
     participant App as 当前前台应用
@@ -236,7 +233,7 @@ stateDiagram-v2
 - ASR 接口必须接受 `multipart/form-data` 并返回 JSON。
 - 只有 HTTP 200 被视为成功；其他状态码进入重试或失败流程。
 - HTTP 客户端不使用系统代理、不自动跟随重定向，也不启用自动响应压缩。
-- GUI 的 libav 转换通过同步 C ABI 调用，取消会在调用前后检查；HTTP 上传、响应读取和重试等待可以立即取消。
+- 内嵌 libav 在阻塞工作线程运行，解码、区间处理和文件 I/O 均接入取消回调；清理会等待工作线程关闭输出。
 - 自动粘贴发送到识别完成时的前台应用。用户在等待期间切换焦点，会改变最终粘贴目标。
 - GUI 不提供 Windows Toast、托盘气泡或其他系统通知。
 - 旧配置中的 `NOTIFICATION` 会被忽略，保存时不会重新写入。
@@ -255,21 +252,15 @@ stateDiagram-v2
 
 - Windows x86_64。
 - 快捷键录音模式需要麦克风。
-- `ffmpeg.exe` 必须可通过 `PATH` 找到。
+- 无需安装系统 FFmpeg。
 - 一个兼容的 ASR HTTP 接口。
-
-确认 FFmpeg：
-
-```powershell
-ffmpeg -version
-```
 
 ### 从源码开发
 
 - Rust 1.97 或更新版本。
 - `x86_64-pc-windows-gnu` Rust 目标。
 - MinGW-w64、C/C++ 构建工具、`pkg-config`、Autoconf、Automake、Libtool、NASM、YASM 和 XZ 工具。
-- 构建 GUI 静态依赖时需要能够获取 PortAudio、FFmpeg 和编解码器源码。
+- 构建静态音频依赖时需要能够获取 PortAudio、FFmpeg 和编解码器源码。
 
 ## GUI 使用
 
@@ -315,7 +306,7 @@ ffmpeg -version
 |---|---|
 | Display | 界面语言、配置文件位置、浮窗透明度和浮窗缩放 |
 | API | 地址、Token、模型、语言、提示词、文本路径和额外字段 |
-| Audio | 声道、采样率、采样位深、比特率、编码器和容器 |
+| Audio | 声道、输出采样率、采样位深、比特率、编码器、容器、VAD 和边界填充 |
 | Network | 超时、重试、HTTP/2 和 TLS 校验 |
 | Hotkeys | 三个快捷键、低级键盘钩子开关、两个剪贴板等待时间和使用 SendInput 开关 |
 | Cache | 缓存目录、缓存保留和请求失败占位文本 |
@@ -417,9 +408,11 @@ ffmpeg -version
 | `--codecs <CODEC>` | 覆盖音频编码器 |
 | `--container <FORMAT>` | 覆盖音频容器 |
 | `--channels <N>` | 覆盖声道数 |
-| `--sampling-rate <HZ>` | 覆盖采样率；`--rate` 是兼容别名 |
+| `--sampling-rate <HZ>` | 覆盖最终上传采样率；`--rate` 是兼容别名 |
 | `--sampling-rate-depth <BITS>` | 覆盖转换采样位深 |
 | `--bit-rate <KBPS>` | 覆盖音频比特率 |
+| `--enable-vad <BOOL>` | 开启或显式关闭语音裁剪，默认 false |
+| `--vad-padding-ms <0-1000>` | 边界填充毫秒数，默认 100 |
 
 #### Network
 
@@ -462,7 +455,7 @@ ffmpeg -version
 
 `--help` 显示完整帮助，`--version` 显示版本。
 
-参数解析失败由 Clap 返回退出码 `2`；运行时、请求、转换或文件错误返回退出码 `1`；成功或首次生成默认配置返回 `0`。
+参数解析失败由 Clap 返回退出码 `2`；运行时、请求、转换或文件错误返回退出码 `1`；成功、未检测到语音或首次生成默认配置返回 `0`。文件模式也可通过 Ctrl+C 取消分析、转换和上传。
 
 ## 配置文件
 
@@ -483,6 +476,8 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
   "WINDOW_SCALE": 1.0,
   "CHANNELS": 1,
   "SAMPLING_RATE": 16000,
+  "ENABLE_VAD": false,
+  "VAD_PADDING_MS": 100,
   "SAMPLING_RATE_DEPTH": 16,
   "BIT_RATE": 128,
   "CODECS": "mp3",
@@ -534,13 +529,30 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
 | 字段 | 默认值 | 验证与行为 |
 |---|---:|---|
 | `CHANNELS` | `1` | 允许 1–8；录音和转换都使用该值 |
-| `SAMPLING_RATE` | `16000` | 必须大于 0，单位 Hz |
+| `SAMPLING_RATE` | `16000` | 最终上传采样率，必须大于 0，单位 Hz |
 | `SAMPLING_RATE_DEPTH` | `16` | 允许 8、16、24、32；只影响转换，不改变录音 WAV 的 PCM 16-bit 格式 |
 | `BIT_RATE` | `32` | 必须大于 0，单位 kbps |
 | `CODECS` | `"opus"` | 编码器名称或兼容别名，大小写不敏感 |
 | `CONTAINER` | `"ogg"` | 输出容器/扩展名，大小写不敏感 |
 
-GUI 静态构建覆盖的常用输出包括 Opus/Ogg、MP3、AAC、FLAC、Vorbis 和 WAV/PCM。构建中还包含部分其他编码器与封装器；编码器和容器必须是有效组合。
+共享静态构建覆盖的常用输出包括 Opus/Ogg、MP3、AAC、FLAC、Vorbis 和 WAV/PCM。构建中还包含部分其他编码器与封装器；编码器和容器必须是有效组合。
+
+### 语音检测与捕获
+
+麦克风优先以 48 kHz PCM 16-bit 捕获，失败后依次尝试设备默认采样率、配置的输出采样率。WAV 头保存实际捕获采样率。`SAMPLING_RATE` 只控制最终上传采样率。
+
+| 字段 | 默认值 | 行为 |
+|---|---:|---|
+| `ENABLE_VAD` | `false` | 适用于 GUI 录音、CLI 录音和 CLI `--file` |
+| `VAD_PADDING_MS` | `100` | 整数 0～1000 ms；VAD 关闭时仍保留并校验 |
+
+Audio 页关闭 VAD 后，边界填充输入框置灰并保留原值。Earshot 1.2.2 在流式 16 kHz 单声道 PCM 上检测，只输出语音区间；最终裁剪、拼接、重采样和编码始终基于原始音频。不生成分析 WAV 或裁剪中间文件，不使用 libavfilter、大型 filtergraph 或固定区间数量上限。
+
+首个语音片段之前、最后一个片段之后最多各保留完整 padding。内部拼接处，前段后方保留 floor(padding/2) 毫秒，后段前方保留剩余部分，总计一个 padding。原间隔不超过 padding 时完整保留并合并；padding 为 0 时直接拼接语音边界。
+
+未检测到语音时不请求 ASR、不生成文本文件。GUI/快捷键模式返回 Idle，提示“未检测到语音”并清除重试任务；CLI 文件模式打印结果后正常退出。临时文件会被清理。检测到语音时，重试缓冲仍保留原始高质量 WAV；手动重试，以及开启 VAD 时的自动 HTTP 重试，都会重新检测、裁剪和转码。关闭 VAD 时保持原有 HTTP 重试行为。`KEEP_CACHE` 按原有规则保存原始音频、最终转换音频和成功响应。
+
+内嵌构建支持 WAV/PCM、MP3、FLAC、Ogg/Opus、Ogg/Vorbis、M4A/MP4/AAC、M4A/ALAC、WebM/Matroska 音频、WavPack、AC3/EAC3。无法解码的流会明确报错，不回退到外部程序。
 
 ### 网络字段
 
@@ -759,7 +771,7 @@ dist/stt-cli-windows-amd64.zip
 dist/stt-gui-windows-amd64.zip
 ```
 
-`scripts/build-portaudio-windows-amd64.sh` 构建 PortAudio WMME 后端，不启用 WASAPI。`scripts/build-ffmpeg-windows-amd64.sh` 使用 `--disable-everything` 后只启用 GUI 所需的协议、WAV 解码器、音频编码器和封装器。
+`scripts/build-portaudio-windows-amd64.sh` 构建 PortAudio WMME 后端，不启用 WASAPI。`scripts/build-ffmpeg-windows-amd64.sh` 使用 `--disable-everything` 后启用 file 协议；wav/mp3/flac/ogg/mov/aac/matroska/wv/ac3/eac3 解封装器；对应的 PCM、MP3/MP2、FLAC、Opus、Vorbis、AAC、ALAC、WavPack、AC3/EAC3 解码器与解析器；以及原有输出编码器和封装器。禁用 libavfilter。两个程序均启用共享的 `stt-core/static-libav` 功能，Earshot 固定为 1.2.2。
 
 GitHub Actions 还会检查：
 
@@ -790,7 +802,7 @@ GitHub Actions 还会检查：
 - 录音：PortAudio C 阻塞 API、默认输入设备、WMME；不使用 WASAPI。
 - 录音格式：交错 signed int16，临时 WAV 始终为 PCM 16-bit。
 - GUI 转换：静态 libav C ABI；不启动 `ffmpeg.exe`。
-- CLI 转换：外部 `ffmpeg.exe`，取消时终止子进程。
+- CLI 转换：与 GUI 共用内嵌 libav 转换器及取消回调。
 - GUI：Win32 消息循环、Direct2D、DirectWrite 和原生控件；不嵌入 WebView。
 - 托盘：`Shell_NotifyIconW`；不发送托盘气泡。
 - 默认粘贴：`keybd_event`；可选 Unicode 直接输入：`SendInput`。
@@ -806,7 +818,7 @@ GitHub Actions 还会检查：
 | 核心库 | `crates/stt-core/` | 配置、ASR、缓存、录音、快捷键、剪贴板和状态机 |
 | CLI | `crates/stt-cli/` | `stt.exe` |
 | 原生 GUI | `crates/stt-gui/` | `STT.exe` |
-| libav 桥接 | `native/` | GUI 使用的 C ABI |
+| libav 桥接 | `native/` | GUI 与 CLI 共用的 C ABI |
 | 构建脚本 | `scripts/` | PortAudio、FFmpeg、Rust 和发布包构建 |
 | Windows 资源 | `assets/` | 程序图标等资源 |
 | 示例配置 | `examples/` | 服务商配置示例 |
@@ -815,7 +827,7 @@ GitHub Actions 还会检查：
 
 ## 第三方组件
 
-GUI 发布包静态链接：
+两个发布包均静态链接：
 
 - FFmpeg/libav n7.1.1
 - PortAudio v19.7.0

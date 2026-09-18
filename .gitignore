@@ -37,6 +37,8 @@ coverage.*
 tmp/
 temp/
 Temp-Scrape/
+vad-audio-tmp/
+native-audio-test-tmp/
 
 # Editor and OS files
 .idea/

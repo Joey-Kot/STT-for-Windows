@@ -1,5 +1,52 @@
 # Rust technical validation record
 
+## VAD and shared embedded audio validation
+
+The implementation adds a pinned Earshot 1.2.2 detector, streaming analysis,
+source-frame interval gating, shared GUI/CLI conversion and capture-rate fallback.
+All 66 Linux tests (59 core, 7 CLI), including native fixtures, pass, as do
+format checks and Clippy with warnings denied. Both Windows release
+binaries link successfully against the expanded static FFmpeg build; PE import
+inspection finds no dynamic PortAudio or libav dependency.
+
+Automated coverage includes configuration migration/bounds, explicit CLI disable,
+integer interval mapping/shared padding/5,000 intervals, silence and partial
+frames, synthetic speech with pauses, detector isolation, exact stereo sample
+selection, cancellation cleanup and out-of-range selection failure. Native fixture
+tests decode WAV/PCM, MP3, FLAC, Opus/Ogg, Vorbis/Ogg, AAC/M4A, ALAC/M4A,
+WebM, Matroska, WavPack, AC3 and EAC3 with VAD both enabled and disabled.
+
+Planar ALAC interval selection also matches the fully decoded PCM sample for
+sample. Output roundtrips cover PCM 16-bit/24-bit/float, AAC, ALAC, FLAC, AC3,
+EAC3, Opus, MP3 and Vorbis. Device mocks verify both device-rate and target-rate
+fallback; a local HTTP server verifies audio preparation before automatic retry.
+
+The fixed speech fixture is the repository's generated Flite “test” PCM in
+`scripts/connectivity_test.pcm.b64`; silence, pauses and stereo sample-index
+fixtures are constructed deterministically in tests. Extra codec fixtures can be
+generated with `bash scripts/generate-audio-test-fixtures.sh OUTPUT_DIRECTORY`;
+that developer-only script requires an FFmpeg executable with Flite.
+
+CI runs `bash scripts/test-embedded-audio.sh` after fetching the Windows
+FFmpeg source. It creates a separate Linux libav build and deterministic codec
+fixtures under `native-audio-test-tmp`, then runs native tests and Clippy.
+Only this test generator requires a system FFmpeg executable.
+
+Native tests require an installed FFmpeg 7.1.1 development build and
+`PKG_CONFIG_PATH` pointing to its pkgconfig directory:
+
+```bash
+STT_AUDIO_FIXTURES=/absolute/fixture/directory cargo test --workspace --features stt-core/static-libav
+cargo clippy --workspace --all-targets --features stt-core/static-libav -- -D warnings
+```
+
+This Linux environment cannot establish real Windows 10/11 microphone, UI or
+driver behavior. Still required: 48 kHz and fallback devices, USB/Bluetooth/virtual
+inputs, long recordings, frequent pauses, Chinese/English/mixed speech, music,
+keyboard/fan noise, disabled padding/save validation in all five UI languages,
+matching GUI/CLI output and running both release binaries without system FFmpeg.
+Synthetic speech tests do not establish natural-speech detection accuracy.
+
 ## Optional SendInput channel validation
 
 - Linux: 52 tests pass (46 core, 6 CLI), including Unicode batching, partial/zero
@@ -27,11 +74,11 @@ The following automated validation record describes the earlier rewrite.
   reported `WMME=yes` and `WASAPI=no`.
 - FFmpeg n7.1.1 and the Ogg, Vorbis, Opus 1.5.2, LAME 3.100, and
   OpenCore AMR 0.1.6 dependencies were cross-built as static MinGW archives.
-- The libav bridge is built only for the GUI `static-libav` feature. A real
-  release link completed for both `stt.exe` and `STT.exe`.
+- The earlier rewrite linked libav only in the GUI; the shared audio implementation
+  now links it through core in both release binaries.
 - PE inspection reports the CLI as Windows CUI and the GUI as Windows GUI.
   The GUI imports no PortAudio/libav DLL and contains the static libav backend
-  marker but no external `ffmpeg.exe` marker; the CLI has the inverse markers.
+  marker but no external `ffmpeg.exe` marker. Both binaries now use embedded audio.
 - The original GUI import table contained only `keybd_event`; the optional
   Unicode input channel now requires `SendInput` in both CLI and GUI. CI checks both imports.
 - CI checks source/binary markers for notifications, external

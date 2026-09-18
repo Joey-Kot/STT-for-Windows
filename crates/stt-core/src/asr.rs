@@ -23,6 +23,8 @@ pub struct Transcription {
 
 #[derive(Debug, Error)]
 pub enum AsrError {
+    #[error("{0}")]
+    Preparation(#[from] crate::converter::ConvertError),
     #[error("API endpoint is empty")]
     EmptyEndpoint,
     #[error("invalid extra-config JSON: {0}")]
@@ -96,6 +98,21 @@ impl AsrClient {
         cancellation: &CancellationToken,
         file_path: &Path,
     ) -> Result<Transcription, AsrError> {
+        self.transcribe_with_retry_prepare(cancellation, file_path, || async { Ok(()) })
+            .await
+    }
+
+    /// Rebuild audio from its original source before each automatic retry.
+    pub async fn transcribe_with_retry_prepare<F, Fut>(
+        &self,
+        cancellation: &CancellationToken,
+        file_path: &Path,
+        mut prepare: F,
+    ) -> Result<Transcription, AsrError>
+    where
+        F: FnMut() -> Fut,
+        Fut: std::future::Future<Output = Result<(), AsrError>>,
+    {
         if cancellation.is_cancelled() {
             return Err(AsrError::Canceled);
         }
@@ -107,6 +124,9 @@ impl AsrClient {
         let mut delay = self.config.retry_base_delay;
         loop {
             attempt += 1;
+            if attempt > 1 {
+                prepare().await?;
+            }
             let (succeeded, response) = self.upload_once(cancellation, file_path).await?;
             if succeeded {
                 return Ok(Transcription {
@@ -283,6 +303,75 @@ pub fn format_response(response: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[tokio::test]
+    async fn retry_rebuilds_audio_before_uploading_again() {
+        use std::sync::{
+            Arc,
+            atomic::{AtomicUsize, Ordering},
+        };
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            for status in ["503 Service Unavailable", "200 OK"] {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let n = stream.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                        let length = headers
+                            .lines()
+                            .find_map(|s| s.strip_prefix("content-length: "))
+                            .and_then(|s| s.trim().parse::<usize>().ok());
+                        if length.is_some_and(|n| request.len() >= end + 4 + n)
+                            || request.ends_with(b"0\r\n\r\n")
+                        {
+                            break;
+                        }
+                    }
+                }
+                let body = r#"{"text":"done"}"#;
+                let response = format!(
+                    "HTTP/1.1 {status}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            }
+        });
+        let dir = tempfile::tempdir().unwrap();
+        let audio = dir.path().join("audio.wav");
+        std::fs::write(&audio, b"audio").unwrap();
+        let client = super::AsrClient::new(crate::Config {
+            api_endpoint: format!("http://{address}"),
+            max_retry: 2,
+            retry_base_delay: 0.0,
+            ..Default::default()
+        })
+        .unwrap();
+        let prepared = Arc::new(AtomicUsize::new(0));
+        let count = prepared.clone();
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            client.transcribe_with_retry_prepare(
+                &tokio_util::sync::CancellationToken::new(),
+                &audio,
+                || async {
+                    count.fetch_add(1, Ordering::SeqCst);
+                    Ok(())
+                },
+            ),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+        assert_eq!(result.text, "done");
+        assert_eq!(prepared.load(Ordering::SeqCst), 1);
+        server.await.unwrap();
+    }
     use super::*;
 
     #[test]

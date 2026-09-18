@@ -19,14 +19,14 @@ pub struct ConversionSettings {
 
 #[derive(Debug, Error)]
 pub enum ConvertError {
+    #[error("No speech detected")]
+    NoSpeech,
     #[error("conversion canceled")]
     Canceled,
     #[error("input and output paths must differ")]
     SamePath,
     #[error("unsupported codec: {0}")]
     UnsupportedCodec(String),
-    #[error("failed to start ffmpeg: {0}")]
-    Start(#[source] std::io::Error),
     #[error("ffmpeg failed: {message}")]
     Failed { message: String },
     #[error("libav conversion is unavailable in this build")]
@@ -43,6 +43,20 @@ pub trait AudioConverter: Send + Sync {
         output: &Path,
         source_rate: i32,
     ) -> Result<(), ConvertError>;
+}
+
+/// Shared front-end entry; implementations own analysis and final conversion.
+pub async fn prepare_audio_for_upload(
+    converter: &dyn AudioConverter,
+    cancellation: &CancellationToken,
+    config: &Config,
+    input: &Path,
+    output: &Path,
+    source_rate: i32,
+) -> Result<(), ConvertError> {
+    converter
+        .convert(cancellation, config, input, output, source_rate)
+        .await
 }
 
 pub fn settings_for(config: &Config, source_rate: i32) -> Result<ConversionSettings, ConvertError> {
@@ -84,30 +98,6 @@ pub fn settings_for(config: &Config, source_rate: i32) -> Result<ConversionSetti
         depth,
         sample_format,
     })
-}
-
-pub fn ffmpeg_args(settings: &ConversionSettings, input: &Path, output: &Path) -> Vec<String> {
-    let mut args = vec![
-        "-y".into(),
-        "-i".into(),
-        input.to_string_lossy().into_owned(),
-        "-ac".into(),
-        settings.channels.to_string(),
-        "-ar".into(),
-        settings.sample_rate.to_string(),
-        "-c:a".into(),
-        settings.ffmpeg_codec.clone(),
-    ];
-    if !settings.ffmpeg_codec.starts_with("pcm_") {
-        if settings.codec_has_bitrate {
-            args.extend(["-b:a".into(), format!("{}k", settings.bitrate)]);
-        }
-        if !settings.sample_format.is_empty() {
-            args.extend(["-sample_fmt".into(), settings.sample_format.clone()]);
-        }
-    }
-    args.push(output.to_string_lossy().into_owned());
-    args
 }
 
 pub fn sample_format_for_depth(depth: i32) -> &'static str {
@@ -170,59 +160,6 @@ pub fn paths_equal(first: &Path, second: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn preserves_argument_order_and_pcm_rules() {
-        let settings = ConversionSettings {
-            codec_key: "opus".into(),
-            ffmpeg_codec: "libopus".into(),
-            codec_has_bitrate: true,
-            channels: 2,
-            sample_rate: 48_000,
-            bitrate: 64,
-            depth: 16,
-            sample_format: "s16".into(),
-        };
-        assert_eq!(
-            ffmpeg_args(&settings, Path::new("in.wav"), Path::new("out.ogg")),
-            [
-                "-y",
-                "-i",
-                "in.wav",
-                "-ac",
-                "2",
-                "-ar",
-                "48000",
-                "-c:a",
-                "libopus",
-                "-b:a",
-                "64k",
-                "-sample_fmt",
-                "s16",
-                "out.ogg"
-            ]
-        );
-
-        let pcm = ConversionSettings {
-            ffmpeg_codec: "pcm_s16le".into(),
-            ..settings
-        };
-        assert_eq!(
-            ffmpeg_args(&pcm, Path::new("in.wav"), Path::new("out.wav")),
-            [
-                "-y",
-                "-i",
-                "in.wav",
-                "-ac",
-                "2",
-                "-ar",
-                "48000",
-                "-c:a",
-                "pcm_s16le",
-                "out.wav"
-            ]
-        );
-    }
 
     #[test]
     fn maps_aliases_and_defaults() {

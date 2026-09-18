@@ -41,6 +41,10 @@ jobs:
             curl \
             git \
             libtool \
+            ffmpeg \
+            libopus-dev \
+            libmp3lame-dev \
+            libvorbis-dev \
             mingw-w64 \
             nasm \
             pkg-config \
@@ -88,6 +92,9 @@ jobs:
       - name: Build static FFmpeg/libav for MinGW
         run: scripts/build-ffmpeg-windows-amd64.sh
 
+      - name: Validate embedded decoding and VAD on Linux
+        run: bash scripts/test-embedded-audio.sh
+
       - name: Build Rust CLI and native GUI
         run: scripts/build-rust-windows-amd64.sh
 
@@ -109,8 +116,17 @@ jobs:
             echo "GUI contains the external FFmpeg backend." >&2
             exit 1
           fi
-          strings dist/gui/STT.exe | grep '\[ffmpeg\] libav convert'
-          strings dist/cli/stt.exe | grep '\[ffmpeg\] executing: ffmpeg'
+          strings dist/gui/STT.exe | grep '\[ffmpeg\] crop/transcode'
+          strings dist/cli/stt.exe | grep '\[ffmpeg\] crop/transcode'
+          if strings dist/cli/stt.exe | grep '\[ffmpeg\] executing: ffmpeg'; then
+            echo "CLI contains the external FFmpeg backend." >&2
+            exit 1
+          fi
+          cli_imports="$(x86_64-w64-mingw32-objdump -p dist/cli/stt.exe | grep 'DLL Name')"
+          if echo "$cli_imports" | grep -E -i 'avcodec|avformat|avutil|swresample|portaudio'; then
+            echo "CLI has a dynamic PortAudio or libav dependency." >&2
+            exit 1
+          fi
           imports="$(x86_64-w64-mingw32-objdump -p dist/gui/STT.exe | grep 'DLL Name')"
           echo "$imports"
           if echo "$imports" | grep -E -i 'avcodec|avformat|avutil|swresample|portaudio'; then

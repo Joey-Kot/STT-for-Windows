@@ -186,18 +186,18 @@ static int stt_write_fifo_to_encoder(
 
 static int stt_convert_and_queue_frame(
     SwrContext *swr,
-    AVCodecContext *dec_ctx,
+    const AVFrame *input_format,
     AVCodecContext *enc_ctx,
     AVAudioFifo *fifo,
     AVFrame *decoded,
     char *errbuf,
     int errbuf_size
 ) {
-    int64_t delay = swr_get_delay(swr, dec_ctx->sample_rate);
+    int64_t delay = swr_get_delay(swr, input_format->sample_rate);
     int out_samples = (int)av_rescale_rnd(
         delay + decoded->nb_samples,
         enc_ctx->sample_rate,
-        dec_ctx->sample_rate,
+        input_format->sample_rate,
         AV_ROUND_UP
     );
     if (out_samples <= 0) {
@@ -250,18 +250,18 @@ static int stt_convert_and_queue_frame(
 
 static int stt_flush_resampler(
     SwrContext *swr,
-    AVCodecContext *dec_ctx,
+    const AVFrame *input_format,
     AVCodecContext *enc_ctx,
     AVAudioFifo *fifo,
     char *errbuf,
     int errbuf_size
 ) {
     while (1) {
-        int64_t delay = swr_get_delay(swr, dec_ctx->sample_rate);
+        int64_t delay = swr_get_delay(swr, input_format->sample_rate);
         int out_samples = (int)av_rescale_rnd(
             delay,
             enc_ctx->sample_rate,
-            dec_ctx->sample_rate,
+            input_format->sample_rate,
             AV_ROUND_UP
         );
         if (out_samples <= 0) {
@@ -307,6 +307,68 @@ static int stt_flush_resampler(
     }
 }
 
+
+typedef struct SttGate {
+    const SttAudioInterval *intervals;
+    size_t count, index;
+    int enabled;
+    int64_t position;
+    SttCancel cancel;
+    void *context;
+} SttGate;
+
+static int stt_interrupt(void *opaque) {
+    SttGate *gate = opaque;
+    return gate->cancel && gate->cancel(gate->context);
+}
+
+static int stt_gate_frame(SttGate *gate, SwrContext *swr, const AVFrame *input_format,
+    AVCodecContext *enc, AVAudioFifo *fifo, AVFrame *frame, char *errbuf, int errbuf_size) {
+    if (stt_interrupt(gate)) return AVERROR_EXIT;
+    if (frame->sample_rate != input_format->sample_rate ||
+        frame->format != input_format->format ||
+        av_channel_layout_compare(&frame->ch_layout, &input_format->ch_layout)) {
+        stt_set_error(errbuf, errbuf_size, "input audio format changed during decoding");
+        return AVERROR_INVALIDDATA;
+    }
+    if (frame->nb_samples > INT64_MAX - gate->position) return AVERROR(EOVERFLOW);
+    int64_t start = gate->position, end = start + frame->nb_samples;
+    gate->position = end;
+    if (!gate->enabled)
+        return stt_convert_and_queue_frame(swr, input_format, enc, fifo, frame, errbuf, errbuf_size);
+    while (gate->index < gate->count) {
+        if (stt_interrupt(gate)) return AVERROR_EXIT;
+        const SttAudioInterval *i = &gate->intervals[gate->index];
+        if (i->end_frame <= start) { gate->index++; continue; }
+        if (i->start_frame >= end) break;
+        int64_t left = FFMAX(start, i->start_frame), right = FFMIN(end, i->end_frame);
+        AVFrame *selected = NULL;
+        int ret = stt_alloc_audio_frame(&selected, frame->format, &frame->ch_layout,
+            frame->sample_rate, (int)(right-left), errbuf, errbuf_size);
+        if (ret < 0) return ret;
+        ret = av_samples_copy(selected->extended_data, frame->extended_data, 0,
+            (int)(left-start), (int)(right-left), frame->ch_layout.nb_channels, frame->format);
+        if (ret >= 0)
+            ret = stt_convert_and_queue_frame(swr, input_format, enc, fifo, selected, errbuf, errbuf_size);
+        av_frame_free(&selected);
+        if (ret < 0) return ret;
+        if (i->end_frame <= end) gate->index++;
+        else break;
+    }
+    return 0;
+}
+
+static int stt_deliver_samples(AVAudioFifo *fifo, SttSamples callback, void *context) {
+    int16_t buffer[4096];
+    while (av_audio_fifo_size(fifo) > 0) {
+        int n = FFMIN(av_audio_fifo_size(fifo), 4096);
+        void *planes[] = {buffer};
+        if (av_audio_fifo_read(fifo, planes, n) != n) return AVERROR(EIO);
+        if (callback(context, buffer, n)) return AVERROR_EXTERNAL;
+    }
+    return 0;
+}
+
 int stt_ffmpeg_convert(
     const char *in_path,
     const char *out_path,
@@ -317,6 +379,10 @@ int stt_ffmpeg_convert(
     int codec_has_bitrate,
     const char *sample_fmt_name,
     int debug,
+    const SttAudioInterval *intervals, size_t interval_count, int intervals_enabled,
+    SttCancel cancel, void *cancel_context,
+    SttSamples samples, void *samples_context,
+    int *source_rate, int64_t *source_frames,
     char *errbuf,
     int errbuf_size
 ) {
@@ -326,12 +392,23 @@ int stt_ffmpeg_convert(
     AVCodecContext *enc_ctx = NULL;
     AVPacket *packet = NULL;
     AVFrame *decoded = NULL;
+    AVFrame *input_format = NULL;
     AVAudioFifo *fifo = NULL;
     SwrContext *swr = NULL;
     AVStream *out_stream = NULL;
     int audio_stream = -1;
     int ret = 0;
     int64_t next_pts = 0;
+    int output_opened = 0;
+    SttGate gate = {intervals, interval_count, 0, intervals_enabled, 0, cancel, cancel_context};
+    if (intervals_enabled && (!interval_count || !intervals)) return AVERROR(EINVAL);
+    for (size_t n = 0; n < interval_count; n++) {
+        if (intervals[n].start_frame < 0 || intervals[n].end_frame <= intervals[n].start_frame ||
+            (n && intervals[n].start_frame < intervals[n-1].end_frame)) return AVERROR(EINVAL);
+    }
+    ifmt_ctx = avformat_alloc_context();
+    if (!ifmt_ctx) return AVERROR(ENOMEM);
+    ifmt_ctx->interrupt_callback = (AVIOInterruptCB){stt_interrupt, &gate};
 
     av_log_set_level(debug ? AV_LOG_INFO : AV_LOG_ERROR);
 
@@ -383,60 +460,80 @@ int stt_ffmpeg_convert(
         goto cleanup;
     }
 
-    ret = avformat_alloc_output_context2(&ofmt_ctx, NULL, NULL, out_path);
-    if (ret < 0 || ofmt_ctx == NULL) {
-        stt_set_av_error(errbuf, errbuf_size, "could not create output container", ret);
-        goto cleanup;
-    }
-    const AVCodec *encoder = avcodec_find_encoder_by_name(codec_name);
-    if (encoder == NULL) {
-        ret = AVERROR_ENCODER_NOT_FOUND;
-        stt_set_error(errbuf, errbuf_size, "could not find encoder '%s'", codec_name);
-        goto cleanup;
-    }
-    enc_ctx = avcodec_alloc_context3(encoder);
-    if (enc_ctx == NULL) {
-        ret = AVERROR(ENOMEM);
-        stt_set_error(errbuf, errbuf_size, "could not allocate encoder context");
-        goto cleanup;
-    }
-    enc_ctx->sample_rate = sample_rate;
-    enc_ctx->sample_fmt = stt_pick_sample_fmt(encoder, sample_fmt_name);
-    enc_ctx->time_base = (AVRational){1, sample_rate};
-    if (codec_has_bitrate) {
-        enc_ctx->bit_rate = (int64_t)bitrate_kbps * 1000;
-    }
-    av_channel_layout_default(&enc_ctx->ch_layout, channels);
-    if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
-        enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
-    }
-    ret = avcodec_open2(enc_ctx, encoder, NULL);
-    if (ret < 0) {
-        stt_set_av_error(errbuf, errbuf_size, "could not open encoder", ret);
-        goto cleanup;
-    }
+    if (samples) {
+        enc_ctx = avcodec_alloc_context3(NULL);
+        if (!enc_ctx) { ret = AVERROR(ENOMEM); goto cleanup; }
+        enc_ctx->sample_rate = 16000;
+        enc_ctx->sample_fmt = AV_SAMPLE_FMT_S16;
+        av_channel_layout_default(&enc_ctx->ch_layout, 1);
+    } else {
+        ret = avformat_alloc_output_context2(&ofmt_ctx, NULL, NULL, out_path);
+        if (ret < 0 || ofmt_ctx == NULL) {
+            if (ret >= 0) ret = AVERROR(ENOMEM);
+            stt_set_av_error(errbuf, errbuf_size, "could not create output container", ret);
+            goto cleanup;
+        }
+        const AVCodec *encoder = avcodec_find_encoder_by_name(codec_name);
+        if (encoder == NULL) {
+            ret = AVERROR_ENCODER_NOT_FOUND;
+            stt_set_error(errbuf, errbuf_size, "could not find encoder '%s'", codec_name);
+            goto cleanup;
+        }
+        enc_ctx = avcodec_alloc_context3(encoder);
+        if (enc_ctx == NULL) {
+            ret = AVERROR(ENOMEM);
+            stt_set_error(errbuf, errbuf_size, "could not allocate encoder context");
+            goto cleanup;
+        }
+        enc_ctx->sample_rate = sample_rate;
+        enc_ctx->sample_fmt = stt_pick_sample_fmt(encoder, sample_fmt_name);
+        enc_ctx->time_base = (AVRational){1, sample_rate};
+        if (codec_has_bitrate) {
+            enc_ctx->bit_rate = (int64_t)bitrate_kbps * 1000;
+        }
+        av_channel_layout_default(&enc_ctx->ch_layout, channels);
+        if (ofmt_ctx->oformat->flags & AVFMT_GLOBALHEADER) {
+            enc_ctx->flags |= AV_CODEC_FLAG_GLOBAL_HEADER;
+        }
+        ret = avcodec_open2(enc_ctx, encoder, NULL);
+        if (ret < 0) {
+            stt_set_av_error(errbuf, errbuf_size, "could not open encoder", ret);
+            goto cleanup;
+        }
 
-    out_stream = avformat_new_stream(ofmt_ctx, NULL);
-    if (out_stream == NULL) {
-        ret = AVERROR(ENOMEM);
-        stt_set_error(errbuf, errbuf_size, "could not allocate output stream");
-        goto cleanup;
-    }
-    out_stream->time_base = enc_ctx->time_base;
-    ret = avcodec_parameters_from_context(out_stream->codecpar, enc_ctx);
-    if (ret < 0) {
-        stt_set_av_error(errbuf, errbuf_size, "could not copy encoder parameters", ret);
-        goto cleanup;
-    }
+        out_stream = avformat_new_stream(ofmt_ctx, NULL);
+        if (out_stream == NULL) {
+            ret = AVERROR(ENOMEM);
+            stt_set_error(errbuf, errbuf_size, "could not allocate output stream");
+            goto cleanup;
+        }
+        out_stream->time_base = enc_ctx->time_base;
+        ret = avcodec_parameters_from_context(out_stream->codecpar, enc_ctx);
+        if (ret < 0) {
+            stt_set_av_error(errbuf, errbuf_size, "could not copy encoder parameters", ret);
+            goto cleanup;
+        }
 
+    }
+    // Decoder contexts can change while decoding. Keep an owned snapshot of
+    // the resampler's input format for validation and source-frame accounting.
+    input_format = av_frame_alloc();
+    if (!input_format) { ret = AVERROR(ENOMEM); goto cleanup; }
+    input_format->sample_rate = dec_ctx->sample_rate;
+    input_format->format = dec_ctx->sample_fmt;
+    ret = av_channel_layout_copy(&input_format->ch_layout, &dec_ctx->ch_layout);
+    if (ret < 0) {
+        stt_set_av_error(errbuf, errbuf_size, "could not copy input channel layout", ret);
+        goto cleanup;
+    }
     ret = swr_alloc_set_opts2(
         &swr,
         &enc_ctx->ch_layout,
         enc_ctx->sample_fmt,
         enc_ctx->sample_rate,
-        &dec_ctx->ch_layout,
-        dec_ctx->sample_fmt,
-        dec_ctx->sample_rate,
+        &input_format->ch_layout,
+        input_format->format,
+        input_format->sample_rate,
         0,
         NULL
     );
@@ -461,19 +558,23 @@ int stt_ffmpeg_convert(
         goto cleanup;
     }
 
-    if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
-        ret = avio_open(&ofmt_ctx->pb, out_path, AVIO_FLAG_WRITE);
+    if (!samples) {
+        ofmt_ctx->interrupt_callback = (AVIOInterruptCB){stt_interrupt, &gate};
+        if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE)) {
+            ret = avio_open2(&ofmt_ctx->pb, out_path, AVIO_FLAG_WRITE, &ofmt_ctx->interrupt_callback, NULL);
+            output_opened = ret >= 0;
+            if (ret < 0) {
+                stt_set_av_error(errbuf, errbuf_size, "could not open output audio", ret);
+                goto cleanup;
+            }
+        }
+        ret = avformat_write_header(ofmt_ctx, NULL);
         if (ret < 0) {
-            stt_set_av_error(errbuf, errbuf_size, "could not open output audio", ret);
+            stt_set_av_error(errbuf, errbuf_size, "could not write output header", ret);
             goto cleanup;
         }
-    }
-    ret = avformat_write_header(ofmt_ctx, NULL);
-    if (ret < 0) {
-        stt_set_av_error(errbuf, errbuf_size, "could not write output header", ret);
-        goto cleanup;
-    }
 
+    }
     packet = av_packet_alloc();
     decoded = av_frame_alloc();
     if (packet == NULL || decoded == NULL) {
@@ -483,6 +584,7 @@ int stt_ffmpeg_convert(
     }
 
     while ((ret = av_read_frame(ifmt_ctx, packet)) >= 0) {
+        if (stt_interrupt(&gate)) { ret = AVERROR_EXIT; goto cleanup; }
         if (packet->stream_index != audio_stream) {
             av_packet_unref(packet);
             continue;
@@ -494,9 +596,9 @@ int stt_ffmpeg_convert(
             goto cleanup;
         }
         while ((ret = avcodec_receive_frame(dec_ctx, decoded)) >= 0) {
-            ret = stt_convert_and_queue_frame(
+            ret = stt_gate_frame(&gate,
                 swr,
-                dec_ctx,
+                input_format,
                 enc_ctx,
                 fifo,
                 decoded,
@@ -507,7 +609,7 @@ int stt_ffmpeg_convert(
             if (ret < 0) {
                 goto cleanup;
             }
-            ret = stt_write_fifo_to_encoder(
+            ret = samples ? stt_deliver_samples(fifo, samples, samples_context) : stt_write_fifo_to_encoder(
                 fifo,
                 enc_ctx,
                 ofmt_ctx,
@@ -537,9 +639,9 @@ int stt_ffmpeg_convert(
         goto cleanup;
     }
     while ((ret = avcodec_receive_frame(dec_ctx, decoded)) >= 0) {
-        ret = stt_convert_and_queue_frame(
+        ret = stt_gate_frame(&gate,
             swr,
-            dec_ctx,
+            input_format,
             enc_ctx,
             fifo,
             decoded,
@@ -550,7 +652,7 @@ int stt_ffmpeg_convert(
         if (ret < 0) {
             goto cleanup;
         }
-        ret = stt_write_fifo_to_encoder(
+        ret = samples ? stt_deliver_samples(fifo, samples, samples_context) : stt_write_fifo_to_encoder(
             fifo,
             enc_ctx,
             ofmt_ctx,
@@ -569,11 +671,11 @@ int stt_ffmpeg_convert(
         goto cleanup;
     }
 
-    ret = stt_flush_resampler(swr, dec_ctx, enc_ctx, fifo, errbuf, errbuf_size);
+    ret = stt_flush_resampler(swr, input_format, enc_ctx, fifo, errbuf, errbuf_size);
     if (ret < 0) {
         goto cleanup;
     }
-    ret = stt_write_fifo_to_encoder(
+    ret = samples ? stt_deliver_samples(fifo, samples, samples_context) : stt_write_fifo_to_encoder(
         fifo,
         enc_ctx,
         ofmt_ctx,
@@ -586,18 +688,28 @@ int stt_ffmpeg_convert(
     if (ret < 0) {
         goto cleanup;
     }
-    ret = stt_encode_write(enc_ctx, ofmt_ctx, out_stream, NULL, errbuf, errbuf_size);
-    if (ret < 0) {
-        goto cleanup;
+    if (!samples) {
+        ret = stt_encode_write(enc_ctx, ofmt_ctx, out_stream, NULL, errbuf, errbuf_size);
+        if (ret < 0) {
+            goto cleanup;
+        }
+        ret = av_write_trailer(ofmt_ctx);
+        if (ret < 0) {
+            stt_set_av_error(errbuf, errbuf_size, "could not write output trailer", ret);
+            goto cleanup;
+        }
+        ret = 0;
+
     }
-    ret = av_write_trailer(ofmt_ctx);
-    if (ret < 0) {
-        stt_set_av_error(errbuf, errbuf_size, "could not write output trailer", ret);
-        goto cleanup;
+    if (intervals_enabled && gate.position < intervals[interval_count-1].end_frame) {
+        ret = AVERROR_INVALIDDATA;
+        stt_set_error(errbuf, errbuf_size, "input ended before selected intervals");
     }
-    ret = 0;
+    if (source_rate) *source_rate = input_format->sample_rate;
+    if (source_frames) *source_frames = gate.position;
 
 cleanup:
+    av_frame_free(&input_format);
     if (decoded != NULL) {
         av_frame_free(&decoded);
     }
@@ -618,13 +730,15 @@ cleanup:
     }
     if (ofmt_ctx != NULL) {
         if (!(ofmt_ctx->oformat->flags & AVFMT_NOFILE) && ofmt_ctx->pb != NULL) {
-            avio_closep(&ofmt_ctx->pb);
+            int close_ret = avio_closep(&ofmt_ctx->pb);
+            if (ret >= 0 && close_ret < 0) ret = close_ret;
         }
         avformat_free_context(ofmt_ctx);
     }
     if (ifmt_ctx != NULL) {
         avformat_close_input(&ifmt_ctx);
     }
+    if (stt_interrupt(&gate)) ret = AVERROR_EXIT;
+    if (ret < 0 && output_opened) remove(out_path);
     return ret;
 }
-

@@ -1,6 +1,6 @@
 # Third-Party Notices
 
-The GUI release statically links the following components. Release packages
+The GUI and CLI releases statically link the following components. Release packages
 include their complete license texts in `THIRD_PARTY_LICENSES/`.
 
 ## FFmpeg
@@ -27,6 +27,13 @@ include their complete license texts in `THIRD_PARTY_LICENSES/`.
   `THIRD_PARTY_LICENSES/Xiph-BSD-3-Clause.txt`
 - opencore-amr 0.1.6 — Apache-2.0;
   `THIRD_PARTY_LICENSES/opencore-amr-Apache-2.0.txt`
+
+## Earshot
+
+- Version: 1.2.2 (pinned)
+- Source: https://github.com/pykeio/earshot
+- License: MIT OR Apache-2.0
+- Used for local streaming voice activity detection; model included in the crate.
 
 ## Rust crates
 

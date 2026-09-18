@@ -33,6 +33,10 @@ pub struct Config {
     pub channels: i32,
     #[serde(rename = "SAMPLING_RATE")]
     pub sampling_rate: i32,
+    #[serde(rename = "ENABLE_VAD")]
+    pub enable_vad: bool,
+    #[serde(rename = "VAD_PADDING_MS")]
+    pub vad_padding_ms: u32,
     #[serde(rename = "SAMPLING_RATE_DEPTH")]
     pub sampling_rate_depth: i32,
     #[serde(rename = "BIT_RATE")]
@@ -95,6 +99,8 @@ impl Default for Config {
             window_scale: 1.0,
             channels: 1,
             sampling_rate: 16_000,
+            enable_vad: false,
+            vad_padding_ms: 100,
             sampling_rate_depth: 16,
             bit_rate: 32,
             codecs: "opus".into(),
@@ -177,6 +183,11 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        if self.vad_padding_ms > 1000 {
+            return Err(ConfigError::Invalid(
+                "invalid VAD_PADDING_MS (allowed 0..=1000 ms)".into(),
+            ));
+        }
         if !self.opacity.is_finite()
             || !(0.1..=1.0).contains(&self.opacity)
             || !is_opacity_step_aligned(self.opacity)
@@ -305,6 +316,32 @@ pub fn container_extension(container: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vad_defaults_roundtrip_and_bounds() {
+        let old: super::Config = serde_json::from_str("{}").unwrap();
+        assert!(!old.enable_vad);
+        assert_eq!(old.vad_padding_ms, 100);
+        for padding in [0, 1000] {
+            let config: super::Config = serde_json::from_value(serde_json::json!({
+                "ENABLE_VAD": true, "VAD_PADDING_MS": padding
+            }))
+            .unwrap();
+            config.validate().unwrap();
+            assert_eq!(
+                serde_json::to_value(config).unwrap()["VAD_PADDING_MS"],
+                padding
+            );
+        }
+        assert!(serde_json::from_str::<super::Config>(r#"{"VAD_PADDING_MS":-1}"#).is_err());
+        let config: super::Config = serde_json::from_str(r#"{"VAD_PADDING_MS":1001}"#).unwrap();
+        assert!(
+            config
+                .validate()
+                .unwrap_err()
+                .to_string()
+                .contains("VAD_PADDING_MS")
+        );
+    }
     use super::*;
 
     #[test]

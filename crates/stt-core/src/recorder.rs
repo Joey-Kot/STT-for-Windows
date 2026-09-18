@@ -69,6 +69,9 @@ pub trait AudioStream: Send {
 }
 
 pub trait AudioBackend: Send + Sync + 'static {
+    fn default_sample_rate(&self) -> Option<u32> {
+        None
+    }
     fn initialize(&self) -> Result<(), String>;
     fn terminate(&self) -> Result<(), String>;
     fn open_default_stream(
@@ -267,11 +270,34 @@ fn record_loop(
             return;
         }
     };
-    let mut stream = match backend.open_default_stream(
-        config.channels,
-        f64::from(config.sampling_rate),
-        BUFFER_SAMPLES,
-    ) {
+    let mut capture_rate = 48_000;
+    let mut opened = Err("no supported capture rate".to_string());
+    let mut attempted = Vec::new();
+    for rate in [
+        Some(48_000),
+        backend.default_sample_rate(),
+        u32::try_from(config.sampling_rate).ok(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        if rate == 0 || attempted.contains(&rate) {
+            continue;
+        }
+        attempted.push(rate);
+        opened = backend.open_default_stream(config.channels, f64::from(rate), BUFFER_SAMPLES);
+        if opened.is_ok() {
+            capture_rate = rate;
+            break;
+        }
+    }
+    if config.record_debug {
+        eprintln!(
+            "[record] capture_rate={capture_rate} fallback={} attempted={attempted:?}",
+            capture_rate != 48_000
+        );
+    }
+    let mut stream = match opened {
         Ok(stream) => stream,
         Err(error) => {
             finish_start_failure(
@@ -299,7 +325,7 @@ fn record_loop(
     }
     let specification = hound::WavSpec {
         channels: config.channels as u16,
-        sample_rate: config.sampling_rate as u32,
+        sample_rate: capture_rate,
         bits_per_sample: 16,
         sample_format: hound::SampleFormat::Int,
     };
@@ -321,7 +347,7 @@ fn record_loop(
     };
 
     let _ = started.send(Ok(()));
-    let mut samples = [0_i16; BUFFER_SAMPLES];
+    let mut samples = vec![0_i16; BUFFER_SAMPLES * config.channels as usize];
     let mut consecutive_errors = 0;
     let result = 'recording: loop {
         let state = inner.lock().state;
@@ -353,7 +379,7 @@ fn record_loop(
         match stream.read(&mut samples) {
             Ok(()) => {
                 consecutive_errors = 0;
-                for sample in samples {
+                for &sample in &samples {
                     if let Err(error) = writer.write_sample(sample) {
                         drop(writer);
                         let _ = fs::remove_file(&wav_path);
@@ -443,8 +469,24 @@ mod portaudio {
     #[repr(C)]
     struct PaStream(c_void);
 
+    #[repr(C)]
+    struct PaDeviceInfo {
+        struct_version: i32,
+        name: *const c_char,
+        host_api: i32,
+        max_input_channels: i32,
+        max_output_channels: i32,
+        default_low_input_latency: f64,
+        default_low_output_latency: f64,
+        default_high_input_latency: f64,
+        default_high_output_latency: f64,
+        default_sample_rate: f64,
+    }
+
     #[link(name = "portaudio")]
     unsafe extern "C" {
+        fn Pa_GetDefaultInputDevice() -> i32;
+        fn Pa_GetDeviceInfo(device: i32) -> *const PaDeviceInfo;
         fn Pa_Initialize() -> i32;
         fn Pa_Terminate() -> i32;
         fn Pa_GetErrorText(error: i32) -> *const c_char;
@@ -478,6 +520,17 @@ mod portaudio {
     }
 
     impl AudioBackend for PortAudioBackend {
+        fn default_sample_rate(&self) -> Option<u32> {
+            let device = unsafe { Pa_GetDefaultInputDevice() };
+            if device < 0 {
+                return None;
+            }
+            let info = unsafe { Pa_GetDeviceInfo(device).as_ref() }?;
+            let rate = info.default_sample_rate;
+            (rate.is_finite() && rate > 0.0 && rate <= f64::from(u32::MAX))
+                .then_some(rate.round() as u32)
+        }
+
         fn initialize(&self) -> Result<(), String> {
             check(unsafe { Pa_Initialize() })
         }
@@ -573,6 +626,8 @@ mod tests {
 
     #[derive(Default)]
     struct FakeBackend {
+        supported_rate: Option<u32>,
+        attempted_rates: Mutex<Vec<u32>>,
         initialize_error: Mutex<Option<String>>,
         reads: Arc<Mutex<VecDeque<Result<(), String>>>>,
         read_calls: Arc<AtomicUsize>,
@@ -580,6 +635,9 @@ mod tests {
     }
 
     impl AudioBackend for FakeBackend {
+        fn default_sample_rate(&self) -> Option<u32> {
+            Some(44100)
+        }
         fn initialize(&self) -> Result<(), String> {
             self.initialize_error.lock().clone().map_or(Ok(()), Err)
         }
@@ -592,9 +650,16 @@ mod tests {
         fn open_default_stream(
             &self,
             _input_channels: i32,
-            _sample_rate: f64,
+            sample_rate: f64,
             _frames_per_buffer: usize,
         ) -> Result<Box<dyn AudioStream>, String> {
+            self.attempted_rates.lock().push(sample_rate as u32);
+            if self
+                .supported_rate
+                .is_some_and(|rate| f64::from(rate) != sample_rate)
+            {
+                return Err("unsupported sample rate".into());
+            }
             Ok(Box::new(FakeStream {
                 reads: self.reads.clone(),
                 read_calls: self.read_calls.clone(),
@@ -605,6 +670,31 @@ mod tests {
     struct FakeStream {
         reads: Arc<Mutex<VecDeque<Result<(), String>>>>,
         read_calls: Arc<AtomicUsize>,
+    }
+
+    #[tokio::test]
+    async fn capture_preference_and_device_fallback_preserve_wav_rate() {
+        for (supported, expected) in [
+            (None, vec![48000]),
+            (Some(44100), vec![48000, 44100]),
+            (Some(16000), vec![48000, 44100, 16000]),
+        ] {
+            let backend = Arc::new(FakeBackend {
+                supported_rate: supported,
+                ..Default::default()
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let recorder = Recorder::with_backend(
+                Config::default(),
+                dir.path().to_path_buf(),
+                backend.clone(),
+            );
+            recorder.start(CancellationToken::new()).await.unwrap();
+            let result = recorder.stop().await.unwrap();
+            assert_eq!(*backend.attempted_rates.lock(), expected);
+            let wav = hound::WavReader::open(result.wav_path.unwrap()).unwrap();
+            assert_eq!(wav.spec().sample_rate, *expected.last().unwrap());
+        }
     }
 
     impl AudioStream for FakeStream {

@@ -33,7 +33,9 @@ defaults. Missing fields receive defaults and unknown fields are ignored.
 | `OPACITY` | `1.0` | GUI floating-window opacity; `0.10`–`1.00` in `0.01` steps, where `1.0` is fully opaque |
 | `WINDOW_SCALE` | `1.0` | GUI floating-window scale; `0.3`–`2.0` in `0.1` steps, shared by full and minimal modes |
 | `CHANNELS` | `1` | Inclusive range 1–8 |
-| `SAMPLING_RATE` | `16000` | Greater than zero |
+| `SAMPLING_RATE` | `16000` | Final upload rate, greater than zero |
+| `ENABLE_VAD` | `false` | Shared by GUI, CLI recording and CLI file mode |
+| `VAD_PADDING_MS` | `100` | Integer 0–1000 milliseconds; validated even while VAD is off |
 | `SAMPLING_RATE_DEPTH` | `16` | 8, 16, 24, or 32 |
 | `BIT_RATE` | `32` | Greater than zero |
 | `CODECS` | `"opus"` | Existing alias list, case-insensitive |
@@ -132,9 +134,11 @@ or uploading; when idle with a buffered recording, it retries that recording.
 
 - PortAudio C blocking API; no WASAPI implementation.
 - Initialize for each recording and terminate after it.
-- Default input device, configured channels/rate, interleaved signed int16.
-- Buffer length remains 1024 samples; frames are buffer length divided by
-  channel count.
+- Default input device, configured channels, interleaved signed int16.
+- Try 48000 Hz, device default rate, then target output rate; deduplicate attempts.
+- Store the actual capture rate in the WAV header, including the retry buffer.
+- Each read contains 1024 frames per channel, with an interleaved buffer sized
+  to the channel count.
 - WAV is always PCM 16-bit. `SAMPLING_RATE_DEPTH` affects conversion only.
 - Start returns only after initialize, open, stream start, and WAV creation.
 - Pause does not call `Pa_ReadStream`; it polls state every ~100 ms.
@@ -146,14 +150,46 @@ or uploading; when idle with a buffered recording, it retries that recording.
 
 ## Conversion
 
-The CLI executes `ffmpeg.exe` from `PATH` with the existing argument order:
-`-y -i INPUT -ac CHANNELS -ar RATE -c:a CODEC`, optional bitrate and sample
-format, then output. Cancellation terminates the child process. Input and output
-paths may not be equal.
+Both frontends use `stt-core::embedded_ffmpeg::EmbeddedFfmpegConverter` through
+`prepare_audio_for_upload`. Neither searches PATH nor launches FFmpeg.
+Release builds enable `stt-core/static-libav`; builds without native libraries
+remain usable for type checks and report LibAvUnavailable on conversion.
 
-The GUI links `native/ffmpeg_bridge.c` and calls only its C ABI. It checks
-cancellation before and after the synchronous call and never searches for or
-starts `ffmpeg.exe`.
+The native bridge streams arbitrary supported inputs to 16 kHz mono int16
+callbacks for a fresh Earshot 1.2.2 detector per input. Frames contain 256 samples;
+the final partial frame is zero-padded, but interval endpoints exclude padding.
+Segmentation requires two consecutive voiced frames, at least four voiced frames
+per segment, and ten silent frames to close a segment; EOF flushes active speech.
+
+Half-open intervals count frames per channel. Starts map down and ends map up
+from 16 kHz using u128 arithmetic. Empty intervals are removed; sorted overlapping
+intervals merge, clamp to decoded length and receive padding. The first and last
+boundaries receive full padding; internal boundaries share one padding, splitting
+floor(ms/2) after the preceding segment and the remainder before the next.
+Gaps at most one padding remain intact. No fixed interval count limit exists.
+
+The final pass always decodes the original input once, selects intervals with a
+forward-only cursor and av_samples_copy, then resamples, queues and encodes.
+Packed and planar audio are supported. Output PTS starts at zero and remains
+continuous. No libavfilter, filtergraph or intermediate analysis/cropped WAV is
+used. Any native failure fails the entire operation and deletes partial output.
+Source format changes during decoding fail explicitly.
+
+A blocking worker owns callback state; cancellation is polled during packet,
+frame and interval processing and via AVIO interrupt callbacks. Cleanup waits
+until native output is closed. Identical input/output paths are rejected.
+
+Input support includes WAV/PCM, MP3, FLAC, Ogg/Opus, Ogg/Vorbis, AAC/M4A/MP4,
+ALAC/M4A, WebM/Matroska, WavPack, AC3/EAC3. The build explicitly selects
+demuxers, decoders and parsers plus file protocol.
+
+With VAD off, no analysis or trimming occurs. With VAD on and no speech, no ASR
+request or text output is created; temporary audio is removed, retry state is
+cleared and GUI/hotkey mode returns to Idle. CLI file mode reports the outcome
+and exits successfully. KEEP_CACHE otherwise retains original audio, final
+audio and successful responses under the existing rules. Both manual retry and
+automatic HTTP retry with VAD enabled reanalyze and reconvert the original;
+disabled VAD preserves existing HTTP retry behavior.
 
 ## Runtime state machine
 
@@ -177,7 +213,7 @@ ASR upload, response, and retry waits, performs cache cleanup, and returns to
 Idle without reporting an upload failure.
 
 GUI and CLI hotkey mode retain the latest completed WAV in memory for retry,
-up to 100,000,000 bytes. The buffer survives failed, successful, and manually
+up to 100,000,000 bytes. Except for the no-speech result, the buffer survives failed, successful, and manually
 canceled requests, is replaced only by another completed recording, and is
 released during shutdown. Retry attempts recreate a temporary WAV and do not
 create a persistent retry cache.
@@ -204,6 +240,8 @@ WebView or embedded browser runtime.
   11, preserving antialiased edges; native DWM rounding and the Windows 11 border
   are disabled so no second outer shape is added.
 - Tray menu remains Minimal, Settings, Quit and emits no balloon.
+- Audio settings expose ENABLE_VAD and VAD_PADDING_MS in all five languages.
+  Padding is disabled while VAD is off, retains its value and is validated on save.
 - Settings use native tab/edit/button/checkbox/combobox controls. Token is a
   password edit. Its outer frame uses the same 10 logical pixel continuous-corner
   profile as the floating panels while preserving native child controls. Display

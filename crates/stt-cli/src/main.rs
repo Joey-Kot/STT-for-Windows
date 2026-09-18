@@ -1,64 +1,10 @@
 use std::path::{Path, PathBuf};
-use std::process::Stdio;
 use std::sync::Arc;
 
-use async_trait::async_trait;
 use clap::{ArgAction, Parser};
 use stt_core::Config;
-use stt_core::converter::{AudioConverter, ConvertError, ffmpeg_args, paths_equal, settings_for};
-use stt_core::runtime::{Runtime, run_file_mode};
-use tokio::process::Command;
-use tokio_util::sync::CancellationToken;
-
-#[derive(Debug, Default)]
-struct ExternalFfmpegConverter;
-
-#[async_trait]
-impl AudioConverter for ExternalFfmpegConverter {
-    async fn convert(
-        &self,
-        cancellation: &CancellationToken,
-        config: &Config,
-        input: &Path,
-        output: &Path,
-        source_rate: i32,
-    ) -> Result<(), ConvertError> {
-        if cancellation.is_cancelled() {
-            return Err(ConvertError::Canceled);
-        }
-        if paths_equal(input, output) {
-            return Err(ConvertError::SamePath);
-        }
-        let settings = settings_for(config, source_rate)?;
-        let arguments = ffmpeg_args(&settings, input, output);
-        if config.ffmpeg_debug {
-            eprintln!("[ffmpeg] executing: ffmpeg {}", arguments.join(" "));
-        }
-        #[cfg(windows)]
-        let executable = "ffmpeg.exe";
-        #[cfg(not(windows))]
-        let executable = "ffmpeg";
-        let mut command = Command::new(executable);
-        command
-            .args(&arguments)
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true);
-        let future = command.output();
-        tokio::pin!(future);
-        let result = tokio::select! {
-            _ = cancellation.cancelled() => return Err(ConvertError::Canceled),
-            result = &mut future => result.map_err(ConvertError::Start)?,
-        };
-        if !result.status.success() {
-            return Err(ConvertError::Failed {
-                message: String::from_utf8_lossy(&result.stderr).into_owned(),
-            });
-        }
-        Ok(())
-    }
-}
+use stt_core::embedded_ffmpeg::EmbeddedFfmpegConverter;
+use stt_core::runtime::{Runtime, run_file_mode_with_cancellation};
 
 #[derive(Debug, Parser)]
 #[command(
@@ -102,6 +48,13 @@ struct Arguments {
     #[arg(long, value_name = "JSON", help_heading = "API")]
     extra_config: Option<String>,
 
+    /// Detect speech and trim original input (default false); no system FFmpeg required.
+    #[arg(long, action = ArgAction::Set, value_name = "BOOL", help_heading = "Audio")]
+    enable_vad: Option<bool>,
+    /// Shared padding at internal cuts, in milliseconds (0-1000).
+    #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000), help_heading = "Audio")]
+    vad_padding_ms: Option<u32>,
+
     /// Audio encoder or compatible alias.
     #[arg(long, value_name = "CODEC", help_heading = "Audio")]
     codecs: Option<String>,
@@ -111,7 +64,7 @@ struct Arguments {
     /// Recording and conversion channel count.
     #[arg(long, value_name = "N", help_heading = "Audio")]
     channels: Option<i32>,
-    /// Recording and conversion sample rate in Hz.
+    /// Final upload sample rate in Hz; capture prefers 48000 Hz.
     #[arg(long, alias = "rate", value_name = "HZ", help_heading = "Audio")]
     sampling_rate: Option<i32>,
     /// Conversion sample depth in bits.
@@ -259,6 +212,8 @@ impl Arguments {
             || self.keep_cache.is_some()
             || self.request_failed_notification.is_some()
             || self.ffmpeg_debug.is_some()
+            || self.enable_vad.is_some()
+            || self.vad_padding_ms.is_some()
             || self.record_debug.is_some()
             || self.hotkey_debug.is_some()
             || self.upload_debug.is_some()
@@ -304,6 +259,8 @@ impl Arguments {
             self.request_failed_notification,
         );
         set(&mut config.ffmpeg_debug, self.ffmpeg_debug);
+        set(&mut config.enable_vad, self.enable_vad);
+        set(&mut config.vad_padding_ms, self.vad_padding_ms);
         set(&mut config.record_debug, self.record_debug);
         set(&mut config.hotkey_debug, self.hotkey_debug);
         set(&mut config.upload_debug, self.upload_debug);
@@ -349,11 +306,32 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
     arguments.apply(&mut config);
     config.validate()?;
-    let converter = Arc::new(ExternalFfmpegConverter);
+    let converter = Arc::new(EmbeddedFfmpegConverter);
 
     if let Some(file) = file {
-        let path = run_file_mode(config, converter, &file, output.as_deref()).await?;
-        println!("[main] transcription written to {}", path.display());
+        let cancellation = tokio_util::sync::CancellationToken::new();
+        let signal_token = cancellation.clone();
+        let signal = tokio::spawn(async move {
+            if tokio::signal::ctrl_c().await.is_ok() {
+                signal_token.cancel();
+            }
+        });
+        let result = run_file_mode_with_cancellation(
+            config,
+            converter,
+            &file,
+            output.as_deref(),
+            cancellation,
+        )
+        .await;
+        signal.abort();
+        match result {
+            Ok(path) => println!("[main] transcription written to {}", path.display()),
+            Err(stt_core::runtime::RuntimeError::Convert(
+                stt_core::converter::ConvertError::NoSpeech,
+            )) => println!("[main] No speech detected"),
+            Err(error) => return Err(error.into()),
+        }
         return Ok(());
     }
 
@@ -378,6 +356,29 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn vad_override_and_range() {
+        use clap::Parser;
+        let args = super::Arguments::try_parse_from([
+            "stt",
+            "--enable-vad",
+            "false",
+            "--vad-padding-ms",
+            "0",
+        ])
+        .unwrap();
+        let mut config = stt_core::Config {
+            enable_vad: true,
+            ..Default::default()
+        };
+        args.apply(&mut config);
+        assert!(!config.enable_vad);
+        assert_eq!(config.vad_padding_ms, 0);
+        for value in ["-1", "1001"] {
+            assert!(super::Arguments::try_parse_from(["stt", "--vad-padding-ms", value]).is_err());
+        }
+        assert!(super::Arguments::try_parse_from(["stt", "--enable-vad"]).is_err());
+    }
     use clap::{CommandFactory, Parser};
 
     use super::*;

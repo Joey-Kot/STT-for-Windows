@@ -11,3 +11,7 @@ pub mod runtime;
 pub mod text_input;
 
 pub use config::Config;
+
+pub mod audio_intervals;
+pub mod embedded_ffmpeg;
+pub mod vad;

@@ -170,7 +170,7 @@ const FIELDS: &[FieldSpec] = &[
     },
     FieldSpec {
         key: "SAMPLING_RATE",
-        label: "Sampling rate",
+        label: "Output sample rate",
         group: "Audio",
         kind: FieldKind::Integer,
     },
@@ -197,6 +197,18 @@ const FIELDS: &[FieldSpec] = &[
         label: "Container",
         group: "Audio",
         kind: FieldKind::Text,
+    },
+    FieldSpec {
+        key: "ENABLE_VAD",
+        label: "Voice activity detection",
+        group: "Audio",
+        kind: FieldKind::Boolean,
+    },
+    FieldSpec {
+        key: "VAD_PADDING_MS",
+        label: "VAD padding (ms)",
+        group: "Audio",
+        kind: FieldKind::Integer,
     },
     FieldSpec {
         key: "REQUEST_TIMEOUT",
@@ -982,6 +994,18 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
             },
         );
     }
+
+    let vad_hint = create_label(
+        state,
+        state.language.text("vad_hint"),
+        CONTENT_LEFT,
+        group_y.get("Audio").copied().unwrap_or(FIELD_TOP),
+        510,
+        56,
+        instance,
+    )?;
+    state.control_groups.insert(vad_hint.0 as usize, "Audio");
+    state.localized_controls.push((vad_hint, "vad_hint"));
 
     let api_test_top = group_y.get("API").copied().unwrap_or(FIELD_TOP);
     let test_connectivity = create_child(
@@ -2188,6 +2212,18 @@ fn enable_controls(state: &SettingsState, enabled: bool) {
 }
 
 fn update_input_controls(state: &SettingsState) {
+    if let Some(control) = state.controls.get("VAD_PADDING_MS") {
+        let enabled = !state.saving
+            && state
+                .boolean_values
+                .get("ENABLE_VAD")
+                .copied()
+                .unwrap_or(false);
+        unsafe {
+            let _ = EnableWindow(*control, enabled);
+            let _ = InvalidateRect(Some(*control), None, true);
+        }
+    }
     let enabled = !state.saving
         && !state
             .boolean_values

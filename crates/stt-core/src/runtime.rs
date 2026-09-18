@@ -14,7 +14,7 @@ use crate::Config;
 use crate::asr::{AsrClient, AsrError, Transcription};
 use crate::cache;
 use crate::clipboard::ClipboardError;
-use crate::converter::{AudioConverter, ConvertError};
+use crate::converter::{AudioConverter, ConvertError, prepare_audio_for_upload};
 use crate::hotkey::{self, HotkeyRegistration};
 use crate::recorder::{Recorder, RecorderError, RecorderState, RecordingResult};
 use crate::text_input;
@@ -685,21 +685,23 @@ impl Runtime {
             (inner.config.clone(), inner.asr_client.clone())
         };
         let output_path = cache::recording_output_path(&wav_path, &config.container);
-        if let Err(error) = self
-            .converter
-            .convert(
-                cancellation,
-                &config,
-                &wav_path,
-                &output_path,
-                config.sampling_rate,
-            )
-            .await
+        if let Err(error) = prepare_audio_for_upload(
+            self.converter.as_ref(),
+            cancellation,
+            &config,
+            &wav_path,
+            &output_path,
+            config.sampling_rate,
+        )
+        .await
         {
             clean_up_recording_attempt(&config, false, &wav_path, &output_path, false, &[]);
             if !self.is_stopped() {
                 if cancellation.is_cancelled() || matches!(error, ConvertError::Canceled) {
                     self.set_state(State::Idle, "Request canceled", None::<&RuntimeError>);
+                } else if matches!(error, ConvertError::NoSpeech) {
+                    self.inner.lock().retry_recording = None;
+                    self.set_state(State::Idle, "No speech detected", None::<&RuntimeError>);
                 } else {
                     self.set_retryable_error("FFmpeg conversion failed", &error);
                 }
@@ -716,7 +718,23 @@ impl Runtime {
             return;
         }
 
-        let transcription = client.transcribe(cancellation, &output_path).await;
+        let transcription = client
+            .transcribe_with_retry_prepare(cancellation, &output_path, || async {
+                if !config.enable_vad {
+                    return Ok(());
+                }
+                prepare_audio_for_upload(
+                    self.converter.as_ref(),
+                    cancellation,
+                    &config,
+                    &wav_path,
+                    &output_path,
+                    config.sampling_rate,
+                )
+                .await
+                .map_err(AsrError::from)
+            })
+            .await;
         match transcription {
             Ok(transcription) => {
                 if self.is_stopped() {
@@ -868,10 +886,27 @@ impl Runtime {
 }
 
 pub async fn run_file_mode(
+    config: Config,
+    converter: Arc<dyn AudioConverter>,
+    input_path: &Path,
+    output_path: Option<&Path>,
+) -> Result<PathBuf, RuntimeError> {
+    run_file_mode_with_cancellation(
+        config,
+        converter,
+        input_path,
+        output_path,
+        CancellationToken::new(),
+    )
+    .await
+}
+
+pub async fn run_file_mode_with_cancellation(
     mut config: Config,
     converter: Arc<dyn AudioConverter>,
     input_path: &Path,
     output_path: Option<&Path>,
+    cancellation: CancellationToken,
 ) -> Result<PathBuf, RuntimeError> {
     config.validate()?;
     let temp_dir = cache::initialize_cache_dir(&mut config);
@@ -882,21 +917,37 @@ pub async fn run_file_mode(
     })?;
     let client = AsrClient::new(config.clone())?;
     let temporary = cache::temporary_output_path(&temp_dir, &config.container_extension());
-    let cancellation = CancellationToken::new();
-    if let Err(error) = converter
-        .convert(
-            &cancellation,
-            &config,
-            input_path,
-            &temporary,
-            config.sampling_rate,
-        )
-        .await
+    if let Err(error) = prepare_audio_for_upload(
+        converter.as_ref(),
+        &cancellation,
+        &config,
+        input_path,
+        &temporary,
+        config.sampling_rate,
+    )
+    .await
     {
         let _ = std::fs::remove_file(&temporary);
         return Err(error.into());
     }
-    let transcription = match client.transcribe(&cancellation, &temporary).await {
+    let transcription = match client
+        .transcribe_with_retry_prepare(&cancellation, &temporary, || async {
+            if !config.enable_vad {
+                return Ok(());
+            }
+            prepare_audio_for_upload(
+                converter.as_ref(),
+                &cancellation,
+                &config,
+                input_path,
+                &temporary,
+                config.sampling_rate,
+            )
+            .await
+            .map_err(AsrError::from)
+        })
+        .await
+    {
         Ok(transcription) => transcription,
         Err(error) => {
             let raw = error.last_response().to_vec();
@@ -1000,6 +1051,52 @@ mod tests {
     use super::*;
 
     struct NoopConverter;
+
+    struct NoSpeechConverter;
+    #[async_trait]
+    impl AudioConverter for NoSpeechConverter {
+        async fn convert(
+            &self,
+            _: &CancellationToken,
+            _: &Config,
+            _: &Path,
+            _: &Path,
+            _: i32,
+        ) -> Result<(), ConvertError> {
+            Err(ConvertError::NoSpeech)
+        }
+    }
+
+    #[tokio::test]
+    async fn no_speech_clears_retry_and_returns_idle_without_request() {
+        let dir = tempfile::tempdir().unwrap();
+        let input = dir.path().join("original.wav");
+        std::fs::write(&input, b"original recording").unwrap();
+        let runtime = Runtime::new(
+            Config {
+                enable_vad: true,
+                ..Default::default()
+            },
+            Arc::new(NoSpeechConverter),
+        )
+        .unwrap();
+        runtime.enable_retry_buffer();
+        let result = RecordingResult {
+            wav_path: Some(input.clone()),
+            canceled: false,
+        };
+        runtime.save_completed_recording_for_retry(&result);
+        assert!(runtime.has_retryable_recording());
+        runtime
+            .transcribe_recording(result, &CancellationToken::new(), true)
+            .await;
+        let event = runtime.snapshot();
+        assert_eq!(event.state, State::Idle);
+        assert_eq!(event.message, "No speech detected");
+        assert!(event.error.is_empty());
+        assert!(!runtime.has_retryable_recording());
+        assert!(!input.exists());
+    }
 
     #[async_trait]
     impl AudioConverter for NoopConverter {

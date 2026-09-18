@@ -7,7 +7,7 @@ STT for Windows is a local speech-to-text client for Windows x86_64. It records 
 The project provides two Rust programs:
 
 - `STT.exe`: a native Win32 GUI that statically links PortAudio and a trimmed FFmpeg/libav build, ready to run after extraction.
-- `stt.exe`: a command-line program that supports hotkey-controlled recording and transcription of existing audio files, using `ffmpeg.exe` from `PATH` for audio conversion.
+- `stt.exe`: a command-line program that supports hotkey-controlled recording and transcription of existing audio files, using the same embedded libav converter as the GUI; no system FFmpeg is required.
 
 The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
 
@@ -28,7 +28,7 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
   - Supports Bearer tokens, model, language, prompt, and custom form fields.
   - Supports request timeouts, exponential-backoff retries, HTTP/2, and TLS certificate verification.
 - **Cancelable processing pipeline**
-  - Recording, external FFmpeg conversion, HTTP upload, response reading, retry waits, and clipboard waits are all cancellation-aware.
+  - Recording, embedded FFmpeg conversion, HTTP upload, response reading, retry waits, and clipboard waits are all cancellation-aware.
   - While uploading, the GUI keeps its cancel button available and both programs keep the Cancel or Retry hotkey available.
 - **Recording retry**
   - GUI and CLI hotkey mode retain only the latest completed recording in process memory, capped at 100,000,000 bytes; the buffer is released when the application exits.
@@ -36,9 +36,9 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
 - **Automatic extraction and paste**
   - Uses `TEXT_PATH` to read text from JSON responses, including nested objects and repeated array indexes.
   - Saves the original clipboard text, sends `Ctrl+V`, and then attempts to restore it.
-- **Separate GUI and CLI backends**
-  - The GUI statically links libav and never searches for or launches an external FFmpeg executable.
-  - The CLI uses `ffmpeg.exe` from the system `PATH`, allowing the encoder installation to be managed independently.
+- **Shared embedded audio processing**
+  - Both programs statically link libav and never search for or launch an external FFmpeg executable.
+  - Optional Earshot VAD detects speech on a 16 kHz mono branch and trims the original audio.
 - **Caching and diagnostics**
   - Optionally retains the original WAV, converted audio, and successful response.
   - Provides debug output for recording, conversion, hotkeys, and uploads.
@@ -57,12 +57,11 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
 | Daily desktop use with floating-window configuration and controls | `STT.exe` GUI |
 | Automation, scripts, or terminal-based hotkey recording | `stt.exe` CLI |
 | Transcribing an existing audio file to a text file | `stt.exe` CLI |
-| No FFmpeg installation desired | `STT.exe` GUI |
-| Independently managing or replacing FFmpeg | `stt.exe` CLI |
+| No FFmpeg installation desired | GUI or CLI |
 
 ## Architecture
 
-`stt-core` handles configuration, recording, the runtime state machine, ASR requests, caching, hotkeys, and clipboard operations. The GUI and CLI provide different interaction models and audio conversion backends.
+`stt-core` handles configuration, recording, the runtime state machine, ASR requests, caching, hotkeys, and clipboard operations. The GUI and CLI provide different interaction models and share audio processing.
 
 ```mermaid
 flowchart LR
@@ -82,12 +81,10 @@ flowchart LR
     WAV --> Convert["Recording conversion abstraction"]
     WAV --> RetryBuffer["GUI and CLI retry buffer<br/>latest completed WAV, memory only, ≤100 MB"]
     RetryBuffer -->|Retry| Convert
-    Convert -->|GUI| LibAv["Statically linked libav"]
-    Convert -->|CLI| FFmpeg["External ffmpeg.exe"]
-    FilePipeline --> FFmpeg
+    Convert --> LibAv["Shared embedded libav + optional Earshot VAD"]
+    FilePipeline --> LibAv
 
     LibAv --> Request["ASR multipart request"]
-    FFmpeg --> Request
     Request --> Extract["JSON + TEXT_PATH"]
 
     Extract -->|Hotkey/GUI mode| Channel{USE_SENDINPUT}
@@ -98,7 +95,7 @@ flowchart LR
     Extract -->|File mode| TextFile["Text file"]
 ```
 
-The GUI and CLI share the same configuration format and ASR request semantics. Their main differences are the interface, configuration file location, and conversion backend.
+The GUI and CLI share the same configuration format and ASR request semantics. Their main differences are the interface, configuration file location.
 
 ## Recording and transcription flow
 
@@ -108,7 +105,7 @@ sequenceDiagram
     participant Control as GUI / global hotkeys
     participant Runtime as Rust state machine
     participant Recorder as PortAudio
-    participant Converter as libav / ffmpeg.exe
+    participant Converter as embedded libav
     participant ASR as ASR HTTP API
     participant Clipboard as Windows clipboard
     participant App as Current foreground app
@@ -236,7 +233,7 @@ The retry buffer is replaced only when a new recording is completed. Canceling w
 - The ASR endpoint must accept `multipart/form-data` and return JSON.
 - Only HTTP 200 is treated as success. Other status codes enter the retry or failure path.
 - The HTTP client does not use system proxies, follow redirects automatically, or enable automatic response compression.
-- GUI libav conversion is a synchronous C ABI call, so cancellation is checked before and after the call. HTTP upload, response reading, and retry waits can be canceled immediately.
+- Embedded libav runs on a blocking worker with cancellation callbacks inside decoding and interval processing, plus interruptible file I/O. Cleanup waits for the worker to close the output.
 - Automatic paste targets the foreground application when transcription finishes. Changing focus while waiting changes the final paste target.
 - The GUI does not provide Windows Toast notifications, tray balloons, or other system notifications.
 - `NOTIFICATION` in older configuration files is ignored and is not written back when the configuration is saved.
@@ -255,21 +252,15 @@ The retry buffer is replaced only when a new recording is completed. Canceling w
 
 - Windows x86_64.
 - A microphone for hotkey recording mode.
-- `ffmpeg.exe` available through `PATH`.
+- No system FFmpeg installation is required.
 - A compatible ASR HTTP endpoint.
-
-Verify FFmpeg:
-
-```powershell
-ffmpeg -version
-```
 
 ### Source development
 
 - Rust 1.97 or newer.
 - The Rust `x86_64-pc-windows-gnu` target.
 - MinGW-w64, C/C++ build tools, `pkg-config`, Autoconf, Automake, Libtool, NASM, YASM, and XZ tools.
-- Network access to obtain the PortAudio, FFmpeg, and codec sources when building the static GUI dependencies.
+- Network access to obtain the PortAudio, FFmpeg, and codec sources when building the static audio dependencies.
 
 ## GUI usage
 
@@ -315,7 +306,7 @@ Full mode displays a taskbar tab. Minimal mode hides the taskbar tab while retai
 |---|---|
 | Display | Interface language, configuration file location, floating-window opacity, and floating-window scale |
 | API | Endpoint, token, model, language, prompt, text path, and extra fields |
-| Audio | Channels, sample rate, sample depth, bitrate, codec, and container |
+| Audio | Channels, output sample rate, sample depth, bitrate, codec, container, VAD, and padding |
 | Network | Timeout, retries, HTTP/2, and TLS verification |
 | Hotkeys | Three hotkeys, low-level hook, clipboard wait intervals, and Use SendInput |
 | Cache | Cache directory, cache retention, and request-failure placeholder text |
@@ -417,9 +408,11 @@ If `--output` is omitted, the default output is `<input-file-name>.txt` in the c
 | `--codecs <CODEC>` | Overrides the audio codec |
 | `--container <FORMAT>` | Overrides the audio container |
 | `--channels <N>` | Overrides the channel count |
-| `--sampling-rate <HZ>` | Overrides the sample rate; `--rate` is a compatibility alias |
+| `--sampling-rate <HZ>` | Overrides the final upload sample rate; `--rate` is a compatibility alias |
 | `--sampling-rate-depth <BITS>` | Overrides the conversion sample depth |
 | `--bit-rate <KBPS>` | Overrides the audio bitrate |
+| `--enable-vad <BOOL>` | Enable or explicitly disable speech trimming; default false |
+| `--vad-padding-ms <0-1000>` | Padding in milliseconds; default 100 |
 
 #### Network
 
@@ -462,7 +455,7 @@ If `--output` is omitted, the default output is `<input-file-name>.txt` in the c
 
 `--help` displays the complete help text, and `--version` displays the version.
 
-Clap returns exit code `2` for argument parsing failures. Runtime, request, conversion, or file errors return `1`. Success and the initial creation of a default configuration return `0`.
+Clap returns exit code `2` for argument parsing failures. Runtime, request, conversion, or file errors return `1`. Success, no detected speech, and the initial creation of a default configuration return `0`. Ctrl+C also cancels file-mode analysis, conversion and upload.
 
 ## Configuration file
 
@@ -483,6 +476,8 @@ The GUI and CLI use the same JSON data structure. Missing fields receive their d
   "WINDOW_SCALE": 1.0,
   "CHANNELS": 1,
   "SAMPLING_RATE": 16000,
+  "ENABLE_VAD": false,
+  "VAD_PADDING_MS": 100,
   "SAMPLING_RATE_DEPTH": 16,
   "BIT_RATE": 128,
   "CODECS": "mp3",
@@ -534,13 +529,30 @@ This is only a protocol example. The actual model name, fields, supported audio 
 | Field | Default | Validation and behavior |
 |---|---:|---|
 | `CHANNELS` | `1` | Allowed range: 1–8; used by both recording and conversion |
-| `SAMPLING_RATE` | `16000` | Must be greater than 0, in Hz |
+| `SAMPLING_RATE` | `16000` | Final upload sample rate, greater than 0, in Hz |
 | `SAMPLING_RATE_DEPTH` | `16` | Allowed values: 8, 16, 24, or 32; affects conversion only and does not change the recorded WAV from PCM 16-bit |
 | `BIT_RATE` | `32` | Must be greater than 0, in kbps |
 | `CODECS` | `"opus"` | Encoder name or compatible alias, case-insensitive |
 | `CONTAINER` | `"ogg"` | Output container/extension, case-insensitive |
 
-Common outputs covered by the static GUI build include Opus/Ogg, MP3, AAC, FLAC, Vorbis, and WAV/PCM. The build also includes several additional encoders and muxers; the selected codec and container must form a valid combination.
+Common outputs covered by the shared static build include Opus/Ogg, MP3, AAC, FLAC, Vorbis, and WAV/PCM. The build also includes several additional encoders and muxers; the selected codec and container must form a valid combination.
+
+### Speech detection and capture
+
+Microphone capture prefers 48 kHz PCM 16-bit, falling back to the default device rate and then the configured output rate. The WAV header preserves the actual rate. `SAMPLING_RATE` only sets the final upload rate.
+
+| Field | Default | Behavior |
+|---|---:|---|
+| `ENABLE_VAD` | `false` | Applies to GUI recording, CLI recording and CLI `--file` |
+| `VAD_PADDING_MS` | `100` | Integer 0–1000 ms; validated and retained even while VAD is off |
+
+The Audio page disables the padding input while VAD is off, retaining its value. Detection runs on streamed 16 kHz mono PCM using Earshot 1.2.2. It produces intervals only: final cropping, concatenation, resampling and encoding always use the original input. No analysis WAV or cropped intermediate file is created, and no libavfilter/filtergraph or fixed interval limit is used.
+
+The first/last speech boundaries receive up to one full padding. At each internal cut, the preceding segment receives floor(padding/2) milliseconds and the following segment receives the remainder. Gaps no longer than padding are preserved completely and merged. Padding 0 joins speech boundaries directly.
+
+If no speech is detected, no ASR request or text file is produced. GUI/hotkey mode returns to Idle with “No speech detected” and clears the retry task; CLI file mode prints the result and exits successfully. Temporary files are removed. Otherwise the retry buffer retains the original high-quality WAV; manual retries and automatic HTTP retries with VAD enabled rerun detection and conversion. VAD off retains the existing HTTP retry behavior. `KEEP_CACHE` retains original audio, final converted audio and successful responses according to the existing cache rules.
+
+The embedded build supports WAV/PCM, MP3, FLAC, Ogg/Opus, Ogg/Vorbis, M4A/MP4/AAC, M4A/ALAC, WebM/Matroska audio, WavPack and AC3/EAC3. Unsupported streams fail explicitly; there is no external executable fallback.
 
 ### Network fields
 
@@ -759,7 +771,7 @@ dist/stt-cli-windows-amd64.zip
 dist/stt-gui-windows-amd64.zip
 ```
 
-`scripts/build-portaudio-windows-amd64.sh` builds the PortAudio WMME backend without WASAPI. After using `--disable-everything`, `scripts/build-ffmpeg-windows-amd64.sh` enables only the protocols, WAV decoder, audio encoders, and muxers required by the GUI.
+`scripts/build-portaudio-windows-amd64.sh` builds the PortAudio WMME backend without WASAPI. After using `--disable-everything`, `scripts/build-ffmpeg-windows-amd64.sh` enables file protocol; wav/mp3/flac/ogg/mov/aac/matroska/wv/ac3/eac3 demuxers; corresponding PCM, MP3/MP2, FLAC, Opus, Vorbis, AAC, ALAC, WavPack, AC3/EAC3 decoders and parsers; and the existing output encoders/muxers. libavfilter is disabled. Both programs enable the shared `stt-core/static-libav` feature. Earshot is pinned to 1.2.2.
 
 GitHub Actions also verifies:
 
@@ -790,7 +802,7 @@ After a successful build, the workflow updates the `Latest` tag and Release, the
 - Recording: PortAudio C blocking API, default input device, and WMME; WASAPI is not used.
 - Recording format: interleaved signed int16; temporary WAV files are always PCM 16-bit.
 - GUI conversion: statically linked libav C ABI; does not launch `ffmpeg.exe`.
-- CLI conversion: external `ffmpeg.exe`; cancellation terminates the child process.
+- CLI conversion: the same embedded libav converter and cancellation callbacks as the GUI.
 - GUI: Win32 message loop, Direct2D, DirectWrite, and native controls; no embedded WebView.
 - Tray: `Shell_NotifyIconW`; no tray balloons.
 - Default paste: `keybd_event`; optional direct Unicode input: `SendInput`.
@@ -806,7 +818,7 @@ For precise compatibility behavior, see the [Rust rewrite compatibility contract
 | Core library | `crates/stt-core/` | Configuration, ASR, cache, recording, hotkeys, clipboard, and state machine |
 | CLI | `crates/stt-cli/` | `stt.exe` |
 | Native GUI | `crates/stt-gui/` | `STT.exe` |
-| libav bridge | `native/` | C ABI used by the GUI |
+| libav bridge | `native/` | C ABI shared by GUI and CLI |
 | Build scripts | `scripts/` | PortAudio, FFmpeg, Rust, and release package builds |
 | Windows resources | `assets/` | Application icon and other resources |
 | Example configurations | `examples/` | Provider configuration examples |
@@ -815,7 +827,7 @@ For precise compatibility behavior, see the [Rust rewrite compatibility contract
 
 ## Third-party components
 
-The GUI release package statically links:
+Both release packages statically link:
 
 - FFmpeg/libav n7.1.1
 - PortAudio v19.7.0
