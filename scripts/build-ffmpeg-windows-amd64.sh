@@ -115,8 +115,10 @@ cd "$BUILD_DIR/ffmpeg"
 	--enable-avutil \
 	--enable-swresample \
 	--enable-protocol=file \
-	--enable-demuxer=wav \
-	--enable-decoder=pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_s64be,pcm_s64le,pcm_s8 \
+	--disable-avfilter \
+	--enable-demuxer=wav,mp3,flac,ogg,mov,aac,matroska,wv,ac3,eac3 \
+	--enable-parser=mpegaudio,flac,opus,vorbis,aac,aac_latm,ac3 \
+	--enable-decoder=mp3,mp3float,mp2,flac,opus,vorbis,aac,aac_latm,alac,wavpack,ac3,eac3,pcm_u8,pcm_alaw,pcm_mulaw,adpcm_ms,adpcm_ima_wav,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_s64be,pcm_s64le,pcm_s8 \
 	--enable-encoder=libopus,wavpack,aac,ac3,eac3,libmp3lame,mp2,mp1,flac,alac,libvorbis,adpcm_ms,libopencore_amrnb,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_s64be,pcm_s64le,pcm_s8 \
 	--enable-muxer=wav,ac3,ac4,ogg,mp3,flac,eac3,adts,ipod,mp4,opus,webm,s8,s16be,s16le,s24be,s24le,s32be,s32le,f32be,f32le,f64be,f64le \
 	--enable-libopus \

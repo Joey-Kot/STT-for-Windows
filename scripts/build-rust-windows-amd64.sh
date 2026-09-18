@@ -15,7 +15,7 @@ export PKG_CONFIG_PATH="$PORTAUDIO_PREFIX/lib/pkgconfig:$FFMPEG_PREFIX/lib/pkgco
 export STT_REQUIRE_PORTAUDIO=1
 
 cd "$ROOT_DIR"
-cargo build --release --target "$TARGET" -p stt-cli
+cargo build --release --target "$TARGET" -p stt-cli --features static-libav
 cargo build --release --target "$TARGET" -p stt-gui \
     --features native-gui,static-libav
 
