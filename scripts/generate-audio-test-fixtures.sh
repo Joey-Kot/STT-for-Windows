@@ -3,9 +3,10 @@
 set -euo pipefail
 folder="${1:?usage: generate-audio-test-fixtures.sh OUTPUT_DIRECTORY}"
 mkdir -p "$folder"
-ffmpeg -v error -y -f lavfi -i "flite=text='This is a speech activity detection test. Please preserve every word.':voice=slt" -ar 48000 -ac 2 "$folder/pcm.wav"
+ffmpeg -nostdin -v error -y -f lavfi -i "flite=text='This is a speech activity detection test. Please preserve every word.':voice=slt" -ar 48000 -ac 2 "$folder/pcm.wav"
+# FFmpeg must not consume the format list inherited as the loop's stdin.
 while read -r codec filename; do
-    ffmpeg -v error -y -i "$folder/pcm.wav" -c:a "$codec" "$folder/$filename"
+    ffmpeg -nostdin -v error -y -i "$folder/pcm.wav" -c:a "$codec" "$folder/$filename"
 done <<'FORMATS'
 libmp3lame audio.mp3
 flac audio.flac
@@ -21,6 +22,6 @@ eac3 audio.eac3
 FORMATS
 
 # Raw ADTS segments permit midstream format changes without remuxing.
-ffmpeg -v error -y -i "$folder/pcm.wav" -ar 48000 -ac 2 -c:a aac -f adts "$folder/aac-stereo-48k.aac"
-ffmpeg -v error -y -i "$folder/pcm.wav" -ar 24000 -ac 2 -c:a aac -f adts "$folder/aac-stereo-24k.aac"
-ffmpeg -v error -y -i "$folder/pcm.wav" -ar 48000 -ac 1 -c:a aac -f adts "$folder/aac-mono-48k.aac"
+ffmpeg -nostdin -v error -y -i "$folder/pcm.wav" -ar 48000 -ac 2 -c:a aac -f adts "$folder/aac-stereo-48k.aac"
+ffmpeg -nostdin -v error -y -i "$folder/pcm.wav" -ar 24000 -ac 2 -c:a aac -f adts "$folder/aac-stereo-24k.aac"
+ffmpeg -nostdin -v error -y -i "$folder/pcm.wav" -ar 48000 -ac 1 -c:a aac -f adts "$folder/aac-mono-48k.aac"
