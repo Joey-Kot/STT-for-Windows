@@ -14,13 +14,13 @@ use stt_core::converter::AudioConverter;
 use stt_core::runtime::{Event, Runtime};
 use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
 use windows::Win32::Graphics::Gdi::{
-    BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreateSolidBrush,
-    DC_BRUSH, DC_PEN, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_END_ELLIPSIS, DT_LEFT,
-    DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteObject, DrawTextW, EndPaint,
-    FF_DONTCARE, FW_BOLD, FW_NORMAL, FillRect, GetStockObject, HBRUSH, HDC, HFONT, HGDIOBJ,
-    InvalidateRect, LineTo, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID, RoundRect,
-    ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetDCBrushColor, SetDCPenColor,
-    SetTextColor, TRANSPARENT,
+    BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW, CreatePen, CreatePolygonRgn,
+    CreateSolidBrush, DC_BRUSH, DC_PEN, DEFAULT_CHARSET, DEFAULT_PITCH, DT_CENTER, DT_END_ELLIPSIS,
+    DT_LEFT, DT_NOPREFIX, DT_SINGLELINE, DT_VCENTER, DT_WORDBREAK, DeleteObject, DrawTextW,
+    EndPaint, FF_DONTCARE, FW_BOLD, FW_NORMAL, FillRect, GetStockObject, HBRUSH, HDC, HFONT,
+    HGDIOBJ, InvalidateRect, LineTo, MoveToEx, OUT_DEFAULT_PRECIS, PAINTSTRUCT, PS_SOLID,
+    RoundRect, ScreenToClient, SelectObject, SetBkColor, SetBkMode, SetDCBrushColor, SetDCPenColor,
+    SetTextColor, SetWindowRgn, TRANSPARENT, WINDING,
 };
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::{
@@ -32,20 +32,22 @@ use windows::Win32::UI::WindowsAndMessaging::{
     BN_CLICKED, BS_OWNERDRAW, CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DI_NORMAL,
     DefWindowProcW, DestroyIcon, DestroyWindow, DrawIconEx, EC_LEFTMARGIN, EC_RIGHTMARGIN,
     EN_KILLFOCUS, EN_SETFOCUS, ES_AUTOHSCROLL, ES_AUTOVSCROLL, ES_MULTILINE, ES_PASSWORD,
-    ES_WANTRETURN, GWLP_USERDATA, GetClientRect, GetMessagePos, GetWindowLongPtrW,
+    ES_WANTRETURN, GWLP_USERDATA, GetClientRect, GetMessagePos, GetWindowLongPtrW, GetWindowRect,
     GetWindowTextLengthW, GetWindowTextW, HCURSOR, HMENU, HTCAPTION, HTCLIENT, HWND_TOP, IDC_ARROW,
     LoadCursorW, MB_ICONERROR, MB_OK, MessageBoxW, PostMessageW, RegisterClassExW, SW_HIDE,
-    SW_SHOW, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageW, SetWindowLongPtrW, SetWindowPos,
-    SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE,
-    WM_CTLCOLORBTN, WM_CTLCOLORDLG, WM_CTLCOLOREDIT, WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC,
-    WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND, WM_LBUTTONDOWN, WM_NCCREATE,
-    WM_NCHITTEST, WM_PAINT, WM_SETFONT, WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS,
-    WS_EX_TOOLWINDOW, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
+    SW_SHOW, SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SendMessageW,
+    SetWindowLongPtrW, SetWindowPos, SetWindowTextW, ShowWindow, WINDOW_EX_STYLE, WINDOW_STYLE,
+    WINDOWPOS, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_CTLCOLORBTN, WM_CTLCOLORDLG, WM_CTLCOLOREDIT,
+    WM_CTLCOLORLISTBOX, WM_CTLCOLORSTATIC, WM_DESTROY, WM_DPICHANGED, WM_DRAWITEM, WM_ERASEBKGND,
+    WM_LBUTTONDOWN, WM_NCCREATE, WM_NCHITTEST, WM_PAINT, WM_SETFONT, WM_WINDOWPOSCHANGED,
+    WNDCLASSEXW, WS_CHILD, WS_CLIPCHILDREN, WS_CLIPSIBLINGS, WS_EX_LAYERED, WS_EX_NOACTIVATE,
+    WS_EX_TOOLWINDOW, WS_EX_TRANSPARENT, WS_POPUP, WS_TABSTOP, WS_VISIBLE,
 };
 use windows::core::{PCWSTR, w};
 
 use crate::i18n::Language;
 use crate::platform;
+use crate::render::{PANEL_CORNER_RADIUS, RoundedOutlineRenderer, continuous_rounded_rect_polygon};
 use crate::resources;
 
 const ID_SAVE: usize = 0x6101;
@@ -60,6 +62,7 @@ const WM_SAVE_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 21
 pub const WM_LANGUAGE_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 22;
 const WM_CONNECTIVITY_RESULT: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 23;
 pub const WM_OPACITY_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 24;
+pub const WM_WINDOW_SCALE_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 25;
 
 const WINDOW_WIDTH: i32 = 760;
 const WINDOW_HEIGHT: i32 = 620;
@@ -108,6 +111,12 @@ const FIELDS: &[FieldSpec] = &[
     FieldSpec {
         key: "OPACITY",
         label: "Opacity",
+        group: "Display",
+        kind: FieldKind::Float,
+    },
+    FieldSpec {
+        key: "WINDOW_SCALE",
+        label: "Floating window scale",
         group: "Display",
         kind: FieldKind::Float,
     },
@@ -330,6 +339,12 @@ struct SettingsState {
     font: HFONT,
     title_font: HFONT,
     small_font: HFONT,
+    frame_overlay: Option<SettingsFrameOverlay>,
+}
+
+struct SettingsFrameOverlay {
+    hwnd: HWND,
+    renderer: RoundedOutlineRenderer,
 }
 
 enum ConnectivityStatus {
@@ -348,6 +363,47 @@ struct InputFrame {
 
 pub struct SettingsWindow {
     hwnd: HWND,
+}
+
+impl SettingsFrameOverlay {
+    fn create(
+        owner: HWND,
+        instance: windows::Win32::Foundation::HMODULE,
+        dpi: u32,
+    ) -> Result<Self, String> {
+        let hwnd = unsafe {
+            CreateWindowExW(
+                WINDOW_EX_STYLE(
+                    WS_EX_LAYERED.0 | WS_EX_NOACTIVATE.0 | WS_EX_TOOLWINDOW.0 | WS_EX_TRANSPARENT.0,
+                ),
+                w!("STATIC"),
+                w!(""),
+                WS_POPUP,
+                0,
+                0,
+                platform::scale(WINDOW_WIDTH, dpi),
+                platform::scale(WINDOW_HEIGHT, dpi),
+                Some(owner),
+                None,
+                Some(instance.into()),
+                None,
+            )
+        }
+        .map_err(|error| error.to_string())?;
+        platform::disable_native_window_frame(hwnd);
+        let renderer = RoundedOutlineRenderer::new(
+            WINDOW_WIDTH as f32,
+            WINDOW_HEIGHT as f32,
+            PANEL_CORNER_RADIUS as f32,
+            dpi,
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(Self { hwnd, renderer })
+    }
+
+    fn set_dpi(&mut self, dpi: u32) {
+        self.renderer.set_dpi(dpi);
+    }
 }
 
 impl SettingsWindow {
@@ -397,6 +453,7 @@ impl SettingsWindow {
             font: create_font(dpi, 14, false),
             title_font: create_font(dpi, 20, true),
             small_font: create_font(dpi, 11, false),
+            frame_overlay: None,
         });
         let pointer = Box::into_raw(state);
         let hwnd = unsafe {
@@ -404,7 +461,7 @@ impl SettingsWindow {
                 WS_EX_TOOLWINDOW,
                 w!("STTRustSettingsWindow"),
                 PCWSTR(wide(language.text("settings")).as_ptr()),
-                WS_POPUP | WS_VISIBLE | WS_CLIPCHILDREN,
+                WS_POPUP | WS_CLIPCHILDREN,
                 windows::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
                 windows::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
                 platform::scale(WINDOW_WIDTH, dpi),
@@ -419,10 +476,22 @@ impl SettingsWindow {
             unsafe { drop(Box::from_raw(pointer)) };
             error.to_string()
         })?;
+        let frame_overlay = match SettingsFrameOverlay::create(hwnd, instance, dpi) {
+            Ok(frame_overlay) => frame_overlay,
+            Err(error) => {
+                unsafe {
+                    let _ = DestroyWindow(hwnd);
+                }
+                return Err(error);
+            }
+        };
         unsafe {
+            (*pointer).frame_overlay = Some(frame_overlay);
+            apply_settings_region(&*pointer);
             platform::apply_dark_mode(hwnd);
-            platform::apply_corner_preference(hwnd, platform::supports_rounded_corners());
+            platform::disable_native_window_frame(hwnd);
             let _ = ShowWindow(hwnd, SW_SHOW);
+            sync_settings_frame(&mut *pointer, true);
         }
         Ok(Self { hwnd })
     }
@@ -578,6 +647,9 @@ unsafe extern "system" fn settings_proc(
         WM_CTLCOLORDLG => LRESULT(state.background_brush.0 as isize),
         WM_DPICHANGED => {
             state.dpi = ((wparam.0 >> 16) & 0xffff) as u32;
+            if let Some(frame) = &mut state.frame_overlay {
+                frame.set_dpi(state.dpi);
+            }
             let suggested = unsafe { &*(lparam.0 as *const RECT) };
             unsafe {
                 let _ = SetWindowPos(
@@ -592,19 +664,38 @@ unsafe extern "system" fn settings_proc(
             }
             LRESULT(0)
         }
+        WM_WINDOWPOSCHANGED => {
+            let position = unsafe { &*(lparam.0 as *const WINDOWPOS) };
+            let resized = position.flags.0 & SWP_NOSIZE.0 == 0;
+            let result = unsafe { DefWindowProcW(hwnd, message, wparam, lparam) };
+            if resized {
+                apply_settings_region(state);
+            }
+            sync_settings_frame(state, resized);
+            result
+        }
         WM_SAVE_RESULT => {
             let result = unsafe { Box::from_raw(lparam.0 as *mut Result<Event, String>) };
             state.saving = false;
             enable_controls(state, true);
+            let config = state.runtime.config();
+            unsafe {
+                let alpha = platform::window_opacity_alpha(config.opacity);
+                let _ = PostMessageW(
+                    Some(state.owner),
+                    WM_OPACITY_CHANGED,
+                    WPARAM(alpha as usize),
+                    LPARAM(0),
+                );
+                let _ = PostMessageW(
+                    Some(state.owner),
+                    WM_WINDOW_SCALE_CHANGED,
+                    WPARAM(0),
+                    LPARAM(0),
+                );
+            }
             match *result {
                 Ok(_) => unsafe {
-                    let alpha = platform::window_opacity_alpha(state.runtime.config().opacity);
-                    let _ = PostMessageW(
-                        Some(state.owner),
-                        WM_OPACITY_CHANGED,
-                        WPARAM(alpha as usize),
-                        LPARAM(0),
-                    );
                     let _ = DestroyWindow(hwnd);
                 },
                 Err(error) => show_error(hwnd, &error),
@@ -655,6 +746,64 @@ unsafe extern "system" fn settings_proc(
             LRESULT(0)
         }
         _ => unsafe { DefWindowProcW(hwnd, message, wparam, lparam) },
+    }
+}
+
+fn apply_settings_region(state: &SettingsState) {
+    let mut client = RECT::default();
+    if unsafe { GetClientRect(state.hwnd, &mut client) }.is_err() {
+        return;
+    }
+    let width = platform::unscale(client.right - client.left, state.dpi) as f32;
+    let height = platform::unscale(client.bottom - client.top, state.dpi) as f32;
+    let inset = 0.75;
+    let points = continuous_rounded_rect_polygon(
+        inset,
+        inset,
+        width - inset,
+        height - inset,
+        PANEL_CORNER_RADIUS as f32 - inset,
+        12,
+    )
+    .into_iter()
+    .map(|(x, y)| POINT {
+        x: (x * state.dpi as f32 / 96.0).round() as i32,
+        y: (y * state.dpi as f32 / 96.0).round() as i32,
+    })
+    .collect::<Vec<_>>();
+    unsafe {
+        let region = CreatePolygonRgn(&points, WINDING);
+        if region.is_invalid() {
+            return;
+        }
+        if SetWindowRgn(state.hwnd, Some(region), true) == 0 {
+            let _ = DeleteObject(HGDIOBJ(region.0));
+        }
+    }
+}
+
+fn sync_settings_frame(state: &mut SettingsState, repaint: bool) {
+    let Some(frame) = &mut state.frame_overlay else {
+        return;
+    };
+    let mut window = RECT::default();
+    if unsafe { GetWindowRect(state.hwnd, &mut window) }.is_err() {
+        return;
+    }
+    unsafe {
+        let _ = SetWindowPos(
+            frame.hwnd,
+            Some(HWND_TOP),
+            window.left,
+            window.top,
+            window.right - window.left,
+            window.bottom - window.top,
+            SWP_NOACTIVATE,
+        );
+        let _ = ShowWindow(frame.hwnd, SW_SHOWNOACTIVATE);
+    }
+    if repaint {
+        let _ = frame.renderer.paint(frame.hwnd);
     }
 }
 

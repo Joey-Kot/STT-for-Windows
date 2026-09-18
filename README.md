@@ -15,7 +15,9 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
 
 - **Native Windows GUI**
   - Borderless, always-on-top floating window with per-monitor DPI support.
+  - Consistent antialiased, self-drawn rounded corners for the floating and settings windows on Windows 10 and Windows 11, without a native outer border or second corner layer.
   - Full mode, minimal toolbar, system tray integration, taskbar visibility control, and a native settings window.
+  - Configurable opacity and `0.3`–`2.0` scale shared by the full and minimal floating-window modes.
   - Interface languages: English, Simplified Chinese, German, Japanese, and French.
 - **Global hotkey recording**
   - Start or stop recording, pause or resume recording, and cancel a recording or an in-flight transcription request.
@@ -305,13 +307,13 @@ The interface language is not written to the ASR configuration file and does not
 | Top drag handle | Full mode | Moves the floating window |
 | Toolbar background or button drag | Minimal mode | Moves the toolbar; exceeding the drag threshold suppresses the button action |
 
-Full mode displays a taskbar tab. Minimal mode hides the taskbar tab while retaining the tray icon. The tray menu contains `Minimal`, `Settings`, and `Quit`; double-clicking the tray icon restores full mode.
+Full mode displays a taskbar tab. Minimal mode hides the taskbar tab while retaining the tray icon. The tray menu contains `Minimal`, `Settings`, and `Quit`; double-clicking the tray icon restores full mode. The Display page's floating-window scale applies immediately after saving and scales both modes, including their rendered content and pointer hit regions.
 
 ### Settings window
 
 | Page | Contents |
 |---|---|
-| Display | Interface language, configuration file location, and floating-window opacity |
+| Display | Interface language, configuration file location, floating-window opacity, and floating-window scale |
 | API | Endpoint, token, model, language, prompt, text path, and extra fields |
 | Audio | Channels, sample rate, sample depth, bitrate, codec, and container |
 | Network | Timeout, retries, HTTP/2, and TLS verification |
@@ -478,6 +480,7 @@ The GUI and CLI use the same JSON data structure. Missing fields receive their d
   "TEXT_PATH": "text",
   "ExtraConfig": "{\"response_format\":\"json\",\"temperature\":0}",
   "OPACITY": 1.0,
+  "WINDOW_SCALE": 1.0,
   "CHANNELS": 1,
   "SAMPLING_RATE": 16000,
   "SAMPLING_RATE_DEPTH": 16,
@@ -512,6 +515,7 @@ This is only a protocol example. The actual model name, fields, supported audio 
 | Field | Default | Behavior |
 |---|---:|---|
 | `OPACITY` | `1.0` | GUI floating-window opacity. Allowed values are `0.10`–`1.00` in `0.01` steps; `1.0` is fully opaque. The setting applies to both full and minimal modes. |
+| `WINDOW_SCALE` | `1.0` | GUI floating-window scale. Allowed values are `0.3`–`2.0` in `0.1` steps. Saving applies it immediately to the window, rendered content, and pointer hit regions in both full and minimal modes. |
 
 ### API and response fields
 

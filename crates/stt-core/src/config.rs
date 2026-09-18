@@ -27,6 +27,8 @@ pub struct Config {
     pub extra_config: String,
     #[serde(rename = "OPACITY")]
     pub opacity: f64,
+    #[serde(rename = "WINDOW_SCALE")]
+    pub window_scale: f64,
     #[serde(rename = "CHANNELS")]
     pub channels: i32,
     #[serde(rename = "SAMPLING_RATE")]
@@ -90,6 +92,7 @@ impl Default for Config {
             text_path: "text".into(),
             extra_config: String::new(),
             opacity: 1.0,
+            window_scale: 1.0,
             channels: 1,
             sampling_rate: 16_000,
             sampling_rate_depth: 16,
@@ -181,6 +184,15 @@ impl Config {
             return Err(ConfigError::Invalid(format!(
                 "invalid OPACITY: {} (allowed 0.10..1.00 in steps of 0.01)",
                 self.opacity
+            )));
+        }
+        if !self.window_scale.is_finite()
+            || !(0.3..=2.0).contains(&self.window_scale)
+            || !is_tenth_step_aligned(self.window_scale)
+        {
+            return Err(ConfigError::Invalid(format!(
+                "invalid WINDOW_SCALE: {} (allowed 0.3..2.0 in steps of 0.1)",
+                self.window_scale
             )));
         }
         if !(1..=8).contains(&self.channels) {
@@ -277,6 +289,11 @@ fn is_opacity_step_aligned(opacity: f64) -> bool {
     (hundredths - hundredths.round()).abs() < 1e-9
 }
 
+fn is_tenth_step_aligned(value: f64) -> bool {
+    let tenths = value * 10.0;
+    (tenths - tenths.round()).abs() < 1e-9
+}
+
 pub fn container_extension(container: &str) -> String {
     let lower = container.to_ascii_lowercase();
     if lower.is_empty() {
@@ -317,6 +334,7 @@ mod tests {
             true
         );
         assert_eq!(cfg.opacity, 1.0);
+        assert_eq!(cfg.window_scale, 1.0);
     }
 
     #[test]
@@ -363,6 +381,38 @@ mod tests {
     }
 
     #[test]
+    fn validates_window_scale_range_and_step() {
+        let mut cfg = Config {
+            window_scale: 0.3,
+            ..Config::default()
+        };
+        cfg.validate().unwrap();
+        cfg.window_scale = 2.0;
+        cfg.validate().unwrap();
+        cfg.window_scale = 0.2;
+        assert!(
+            cfg.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("WINDOW_SCALE")
+        );
+        cfg.window_scale = 2.1;
+        assert!(
+            cfg.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("WINDOW_SCALE")
+        );
+        cfg.window_scale = 1.05;
+        assert!(
+            cfg.validate()
+                .unwrap_err()
+                .to_string()
+                .contains("WINDOW_SCALE")
+        );
+    }
+
+    #[test]
     fn round_trip_default_has_no_removed_field() {
         let dir = tempfile::tempdir().unwrap();
         let path = dir.path().join("config.json");
@@ -374,5 +424,6 @@ mod tests {
         assert!(!raw.contains_key("CANCEL_KEY"));
         assert!(raw.contains_key("CANCEL_OR_RETRY_KEY"));
         assert_eq!(raw.get("OPACITY"), Some(&serde_json::json!(1.0)));
+        assert_eq!(raw.get("WINDOW_SCALE"), Some(&serde_json::json!(1.0)));
     }
 }

@@ -1,17 +1,19 @@
-use windows::Win32::Foundation::{HWND, RECT};
+use std::ffi::c_void;
+use std::mem::size_of;
+
+use windows::Win32::Foundation::{COLORREF, HWND, POINT, RECT, SIZE};
 use windows::Win32::Graphics::Direct2D::Common::{
-    D2D_RECT_F, D2D_SIZE_F, D2D_SIZE_U, D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F,
+    D2D_RECT_F, D2D_SIZE_F, D2D1_ALPHA_MODE_PREMULTIPLIED, D2D1_BEZIER_SEGMENT, D2D1_COLOR_F,
     D2D1_FIGURE_BEGIN_FILLED, D2D1_FIGURE_BEGIN_HOLLOW, D2D1_FIGURE_END_CLOSED, D2D1_PIXEL_FORMAT,
 };
 use windows::Win32::Graphics::Direct2D::{
     D2D1_ANTIALIAS_MODE_PER_PRIMITIVE, D2D1_ARC_SEGMENT, D2D1_ARC_SIZE_LARGE, D2D1_ARC_SIZE_SMALL,
     D2D1_CAP_STYLE_ROUND, D2D1_DASH_STYLE_SOLID, D2D1_DRAW_TEXT_OPTIONS_NONE,
-    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT,
-    D2D1_HWND_RENDER_TARGET_PROPERTIES, D2D1_LINE_JOIN_ROUND, D2D1_PRESENT_OPTIONS_NONE,
+    D2D1_FACTORY_TYPE_SINGLE_THREADED, D2D1_FEATURE_LEVEL_DEFAULT, D2D1_LINE_JOIN_ROUND,
     D2D1_RENDER_TARGET_PROPERTIES, D2D1_RENDER_TARGET_TYPE_DEFAULT, D2D1_RENDER_TARGET_USAGE_NONE,
     D2D1_ROUNDED_RECT, D2D1_STROKE_STYLE_PROPERTIES, D2D1_SWEEP_DIRECTION_CLOCKWISE,
-    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1CreateFactory, ID2D1Brush, ID2D1Factory,
-    ID2D1GeometrySink, ID2D1HwndRenderTarget, ID2D1PathGeometry, ID2D1SolidColorBrush,
+    D2D1_SWEEP_DIRECTION_COUNTER_CLOCKWISE, D2D1CreateFactory, ID2D1Brush, ID2D1DCRenderTarget,
+    ID2D1Factory, ID2D1GeometrySink, ID2D1PathGeometry, ID2D1RenderTarget, ID2D1SolidColorBrush,
     ID2D1StrokeStyle,
 };
 use windows::Win32::Graphics::DirectWrite::{
@@ -19,7 +21,13 @@ use windows::Win32::Graphics::DirectWrite::{
     DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
     DWRITE_TEXT_ALIGNMENT_CENTER, DWriteCreateFactory, IDWriteFactory, IDWriteTextFormat,
 };
-use windows::Win32::UI::WindowsAndMessaging::GetClientRect;
+use windows::Win32::Graphics::Dxgi::Common::DXGI_FORMAT_B8G8R8A8_UNORM;
+use windows::Win32::Graphics::Gdi::{
+    AC_SRC_ALPHA, AC_SRC_OVER, BI_RGB, BITMAPINFO, BITMAPINFOHEADER, BLENDFUNCTION,
+    CreateCompatibleDC, CreateDIBSection, DIB_RGB_COLORS, DeleteDC, DeleteObject, HBITMAP, HDC,
+    HGDIOBJ, SelectObject,
+};
+use windows::Win32::UI::WindowsAndMessaging::{GetClientRect, ULW_ALPHA, UpdateLayeredWindow};
 use windows::core::w;
 use windows_numerics::{Matrix3x2, Vector2};
 
@@ -29,6 +37,8 @@ use crate::i18n::Language;
 
 pub const BUTTON_SIZE: i32 = 32;
 pub const BUTTON_GAP: i32 = 6;
+pub const PANEL_CORNER_RADIUS: i32 = 10;
+const RETRY_BUTTON_SCALE: f32 = 0.75;
 pub const FULL_WIDTH: i32 = 222;
 pub const FULL_HEIGHT: i32 = 94;
 pub const MINIMAL_WIDTH: i32 = 170;
@@ -36,12 +46,18 @@ pub const MINIMAL_HEIGHT: i32 = 46;
 
 pub struct Renderer {
     factory: ID2D1Factory,
-    target: Option<ID2D1HwndRenderTarget>,
+    target: Option<ID2D1DCRenderTarget>,
+    surface: Option<LayeredSurface>,
     text_format: IDWriteTextFormat,
     stroke_style: ID2D1StrokeStyle,
     gear_geometry: ID2D1PathGeometry,
     retry_geometry: ID2D1PathGeometry,
+    full_panel_geometry: ID2D1PathGeometry,
+    full_panel_border_geometry: ID2D1PathGeometry,
+    minimal_panel_geometry: ID2D1PathGeometry,
+    minimal_panel_border_geometry: ID2D1PathGeometry,
     dpi: u32,
+    window_scale: f32,
 }
 
 impl Renderer {
@@ -74,14 +90,52 @@ impl Renderer {
             )?;
             let gear_geometry = create_gear_geometry(&factory)?;
             let retry_geometry = create_retry_geometry(&factory)?;
+            let full_panel_geometry = create_continuous_rounded_rect(
+                &factory,
+                0.0,
+                0.0,
+                FULL_WIDTH as f32,
+                FULL_HEIGHT as f32,
+                PANEL_CORNER_RADIUS as f32,
+            )?;
+            let full_panel_border_geometry = create_continuous_rounded_rect(
+                &factory,
+                0.5,
+                0.5,
+                FULL_WIDTH as f32 - 0.5,
+                FULL_HEIGHT as f32 - 0.5,
+                PANEL_CORNER_RADIUS as f32 - 0.5,
+            )?;
+            let minimal_panel_geometry = create_continuous_rounded_rect(
+                &factory,
+                0.0,
+                0.0,
+                MINIMAL_WIDTH as f32,
+                MINIMAL_HEIGHT as f32,
+                PANEL_CORNER_RADIUS as f32,
+            )?;
+            let minimal_panel_border_geometry = create_continuous_rounded_rect(
+                &factory,
+                0.5,
+                0.5,
+                MINIMAL_WIDTH as f32 - 0.5,
+                MINIMAL_HEIGHT as f32 - 0.5,
+                PANEL_CORNER_RADIUS as f32 - 0.5,
+            )?;
             Ok(Self {
                 factory,
                 target: None,
+                surface: None,
                 text_format,
                 stroke_style,
                 gear_geometry,
                 retry_geometry,
+                full_panel_geometry,
+                full_panel_border_geometry,
+                minimal_panel_geometry,
+                minimal_panel_border_geometry,
                 dpi: 96,
+                window_scale: 1.0,
             })
         }
     }
@@ -93,15 +147,29 @@ impl Renderer {
     pub fn set_dpi(&mut self, dpi: u32) {
         self.dpi = dpi.max(96);
         if let Some(target) = &self.target {
-            unsafe { target.SetDpi(self.dpi as f32, self.dpi as f32) };
+            self.apply_dpi(target);
         }
     }
 
-    pub fn resize(&mut self, width: u32, height: u32) {
+    pub fn set_window_scale(&mut self, window_scale: f32) {
+        self.window_scale = window_scale;
         if let Some(target) = &self.target {
-            unsafe {
-                let _ = target.Resize(&D2D_SIZE_U { width, height });
-            }
+            self.apply_dpi(target);
+        }
+    }
+
+    fn apply_dpi(&self, target: &ID2D1RenderTarget) {
+        let effective_dpi = self.dpi as f32 * self.window_scale;
+        unsafe { target.SetDpi(effective_dpi, effective_dpi) };
+    }
+
+    pub fn resize(&mut self, width: u32, height: u32) {
+        if self
+            .surface
+            .as_ref()
+            .is_some_and(|surface| surface.width != width || surface.height != height)
+        {
+            self.surface = None;
         }
     }
 
@@ -116,12 +184,24 @@ impl Renderer {
         _pressed_button: Option<i32>,
         hover_lifts: &[f32; 5],
         animation_time: f32,
+        opacity: u8,
     ) -> windows::core::Result<()> {
-        self.ensure_target(hwnd)?;
+        self.ensure_target()?;
+        self.ensure_surface(hwnd)?;
         let target = self.target.as_ref().unwrap();
+        let surface = self.surface.as_ref().unwrap();
         unsafe {
+            target.BindDC(
+                surface.dc,
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: surface.width as i32,
+                    bottom: surface.height as i32,
+                },
+            )?;
             target.BeginDraw();
-            target.Clear(Some(&color(0.0, 0.0, 0.0, 1.0)));
+            target.Clear(Some(&color(0.0, 0.0, 0.0, 0.0)));
 
             let panel_color = rgb8(18, 22, 25);
             let button_color = rgb8(39, 45, 48);
@@ -156,18 +236,31 @@ impl Renderer {
             } else {
                 (FULL_WIDTH, FULL_HEIGHT)
             };
-            fill_rounded_f(
-                target,
-                &panel,
-                &panel_border,
-                D2D_RECT_F {
-                    left: 0.0,
-                    top: 0.0,
-                    right: size.0 as f32,
-                    bottom: size.1 as f32,
-                },
-                if rounded { 8.0 } else { 0.0 },
-            );
+            if rounded {
+                let (panel_geometry, panel_border_geometry) = if minimal {
+                    (
+                        &self.minimal_panel_geometry,
+                        &self.minimal_panel_border_geometry,
+                    )
+                } else {
+                    (&self.full_panel_geometry, &self.full_panel_border_geometry)
+                };
+                target.FillGeometry(panel_geometry, &panel, None::<&ID2D1Brush>);
+                target.DrawGeometry(panel_border_geometry, &panel_border, 1.0, None);
+            } else {
+                fill_rounded_f(
+                    target,
+                    &panel,
+                    &panel_border,
+                    D2D_RECT_F {
+                        left: 0.0,
+                        top: 0.0,
+                        right: size.0 as f32,
+                        bottom: size.1 as f32,
+                    },
+                    0.0,
+                );
+            }
 
             if !minimal {
                 fill_rounded_f(
@@ -279,41 +372,289 @@ impl Renderer {
                 self.discard_device_resources();
                 return Err(error);
             }
+            surface.present(hwnd, opacity)?;
         }
         Ok(())
     }
 
-    fn ensure_target(&mut self, hwnd: HWND) -> windows::core::Result<()> {
+    fn ensure_target(&mut self) -> windows::core::Result<()> {
         if self.target.is_some() {
             return Ok(());
         }
-        let mut client = RECT::default();
         unsafe {
-            GetClientRect(hwnd, &mut client)?;
             let properties = D2D1_RENDER_TARGET_PROPERTIES {
                 r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
                 pixelFormat: D2D1_PIXEL_FORMAT {
-                    format: Default::default(),
-                    alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
                 },
                 dpiX: self.dpi as f32,
                 dpiY: self.dpi as f32,
                 usage: D2D1_RENDER_TARGET_USAGE_NONE,
                 minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
             };
-            self.target = Some(self.factory.CreateHwndRenderTarget(
-                &properties,
-                &D2D1_HWND_RENDER_TARGET_PROPERTIES {
-                    hwnd,
-                    pixelSize: D2D_SIZE_U {
-                        width: (client.right - client.left).max(1) as u32,
-                        height: (client.bottom - client.top).max(1) as u32,
-                    },
-                    presentOptions: D2D1_PRESENT_OPTIONS_NONE,
-                },
-            )?);
+            self.target = Some(self.factory.CreateDCRenderTarget(&properties)?);
+            self.apply_dpi(self.target.as_ref().unwrap());
         }
         Ok(())
+    }
+
+    fn ensure_surface(&mut self, hwnd: HWND) -> windows::core::Result<()> {
+        let mut client = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut client)? };
+        let width = (client.right - client.left).max(1) as u32;
+        let height = (client.bottom - client.top).max(1) as u32;
+        if self
+            .surface
+            .as_ref()
+            .is_none_or(|surface| surface.width != width || surface.height != height)
+        {
+            self.surface = Some(LayeredSurface::new(width, height)?);
+        }
+        Ok(())
+    }
+}
+
+struct LayeredSurface {
+    dc: HDC,
+    bitmap: HBITMAP,
+    previous: HGDIOBJ,
+    width: u32,
+    height: u32,
+}
+
+impl LayeredSurface {
+    fn new(width: u32, height: u32) -> windows::core::Result<Self> {
+        unsafe {
+            let dc = CreateCompatibleDC(None);
+            if dc.is_invalid() {
+                return Err(windows::core::Error::from_win32());
+            }
+            let info = BITMAPINFO {
+                bmiHeader: BITMAPINFOHEADER {
+                    biSize: size_of::<BITMAPINFOHEADER>() as u32,
+                    biWidth: width as i32,
+                    biHeight: -(height as i32),
+                    biPlanes: 1,
+                    biBitCount: 32,
+                    biCompression: BI_RGB.0,
+                    ..Default::default()
+                },
+                ..Default::default()
+            };
+            let mut bits = std::ptr::null_mut::<c_void>();
+            let bitmap = match CreateDIBSection(Some(dc), &info, DIB_RGB_COLORS, &mut bits, None, 0)
+            {
+                Ok(bitmap) => bitmap,
+                Err(error) => {
+                    let _ = DeleteDC(dc);
+                    return Err(error);
+                }
+            };
+            let previous = SelectObject(dc, HGDIOBJ(bitmap.0));
+            if previous.is_invalid() {
+                let _ = DeleteObject(HGDIOBJ(bitmap.0));
+                let _ = DeleteDC(dc);
+                return Err(windows::core::Error::from_win32());
+            }
+            Ok(Self {
+                dc,
+                bitmap,
+                previous,
+                width,
+                height,
+            })
+        }
+    }
+
+    unsafe fn present(&self, hwnd: HWND, opacity: u8) -> windows::core::Result<()> {
+        let source = POINT { x: 0, y: 0 };
+        let size = SIZE {
+            cx: self.width as i32,
+            cy: self.height as i32,
+        };
+        let blend = BLENDFUNCTION {
+            BlendOp: AC_SRC_OVER as u8,
+            BlendFlags: 0,
+            SourceConstantAlpha: opacity,
+            AlphaFormat: AC_SRC_ALPHA as u8,
+        };
+        unsafe {
+            UpdateLayeredWindow(
+                hwnd,
+                None,
+                None,
+                Some(&size),
+                Some(self.dc),
+                Some(&source),
+                COLORREF(0),
+                Some(&blend),
+                ULW_ALPHA,
+            )
+        }
+    }
+}
+
+impl Drop for LayeredSurface {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = SelectObject(self.dc, self.previous);
+            let _ = DeleteObject(HGDIOBJ(self.bitmap.0));
+            let _ = DeleteDC(self.dc);
+        }
+    }
+}
+
+pub struct RoundedOutlineRenderer {
+    target: ID2D1DCRenderTarget,
+    surface: Option<LayeredSurface>,
+    geometry: ID2D1PathGeometry,
+    dpi: u32,
+}
+
+impl RoundedOutlineRenderer {
+    pub fn new(width: f32, height: f32, radius: f32, dpi: u32) -> windows::core::Result<Self> {
+        unsafe {
+            let factory: ID2D1Factory = D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?;
+            let properties = D2D1_RENDER_TARGET_PROPERTIES {
+                r#type: D2D1_RENDER_TARGET_TYPE_DEFAULT,
+                pixelFormat: D2D1_PIXEL_FORMAT {
+                    format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                    alphaMode: D2D1_ALPHA_MODE_PREMULTIPLIED,
+                },
+                dpiX: dpi as f32,
+                dpiY: dpi as f32,
+                usage: D2D1_RENDER_TARGET_USAGE_NONE,
+                minLevel: D2D1_FEATURE_LEVEL_DEFAULT,
+            };
+            let target = factory.CreateDCRenderTarget(&properties)?;
+            let geometry = create_continuous_rounded_rect(
+                &factory,
+                0.5,
+                0.5,
+                width - 0.5,
+                height - 0.5,
+                radius - 0.5,
+            )?;
+            Ok(Self {
+                target,
+                surface: None,
+                geometry,
+                dpi,
+            })
+        }
+    }
+
+    pub fn set_dpi(&mut self, dpi: u32) {
+        self.dpi = dpi.max(96);
+        unsafe { self.target.SetDpi(self.dpi as f32, self.dpi as f32) };
+        self.surface = None;
+    }
+
+    pub fn paint(&mut self, hwnd: HWND) -> windows::core::Result<()> {
+        let mut client = RECT::default();
+        unsafe { GetClientRect(hwnd, &mut client)? };
+        let width = (client.right - client.left).max(1) as u32;
+        let height = (client.bottom - client.top).max(1) as u32;
+        if self
+            .surface
+            .as_ref()
+            .is_none_or(|surface| surface.width != width || surface.height != height)
+        {
+            self.surface = Some(LayeredSurface::new(width, height)?);
+        }
+        let surface = self.surface.as_ref().unwrap();
+        unsafe {
+            self.target.BindDC(
+                surface.dc,
+                &RECT {
+                    left: 0,
+                    top: 0,
+                    right: width as i32,
+                    bottom: height as i32,
+                },
+            )?;
+            self.target.BeginDraw();
+            self.target.Clear(Some(&color(0.0, 0.0, 0.0, 0.0)));
+            let border = self.target.CreateSolidColorBrush(&rgb8(42, 45, 48), None)?;
+            self.target.DrawGeometry(&self.geometry, &border, 1.5, None);
+            self.target.EndDraw(None, None)?;
+            surface.present(hwnd, u8::MAX)
+        }
+    }
+}
+
+pub fn continuous_rounded_rect_polygon(
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius: f32,
+    segments_per_corner: usize,
+) -> Vec<(f32, f32)> {
+    let (shoulder, near_corner) = continuous_corner_parameters(left, top, right, bottom, radius);
+    let mut points = Vec::with_capacity(segments_per_corner * 4 + 4);
+    points.push((left + shoulder, top));
+    points.push((right - shoulder, top));
+    append_cubic_points(
+        &mut points,
+        (right - shoulder, top),
+        (right - near_corner, top),
+        (right, top + near_corner),
+        (right, top + shoulder),
+        segments_per_corner,
+    );
+    points.push((right, bottom - shoulder));
+    append_cubic_points(
+        &mut points,
+        (right, bottom - shoulder),
+        (right, bottom - near_corner),
+        (right - near_corner, bottom),
+        (right - shoulder, bottom),
+        segments_per_corner,
+    );
+    points.push((left + shoulder, bottom));
+    append_cubic_points(
+        &mut points,
+        (left + shoulder, bottom),
+        (left + near_corner, bottom),
+        (left, bottom - near_corner),
+        (left, bottom - shoulder),
+        segments_per_corner,
+    );
+    points.push((left, top + shoulder));
+    append_cubic_points(
+        &mut points,
+        (left, top + shoulder),
+        (left, top + near_corner),
+        (left + near_corner, top),
+        (left + shoulder, top),
+        segments_per_corner,
+    );
+    points
+}
+
+fn append_cubic_points(
+    points: &mut Vec<(f32, f32)>,
+    start: (f32, f32),
+    control1: (f32, f32),
+    control2: (f32, f32),
+    end: (f32, f32),
+    segments: usize,
+) {
+    for step in 1..=segments.max(1) {
+        let t = step as f32 / segments.max(1) as f32;
+        let inverse = 1.0 - t;
+        points.push((
+            inverse.powi(3) * start.0
+                + 3.0 * inverse.powi(2) * t * control1.0
+                + 3.0 * inverse * t.powi(2) * control2.0
+                + t.powi(3) * end.0,
+            inverse.powi(3) * start.1
+                + 3.0 * inverse.powi(2) * t * control1.1
+                + 3.0 * inverse * t.powi(2) * control2.1
+                + t.powi(3) * end.1,
+        ));
     }
 }
 
@@ -362,8 +703,70 @@ fn button_rect_f(index: i32, minimal: bool, lift: f32) -> D2D_RECT_F {
     }
 }
 
+fn create_continuous_rounded_rect(
+    factory: &ID2D1Factory,
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius: f32,
+) -> windows::core::Result<ID2D1PathGeometry> {
+    // Extend each corner's shoulder beyond a circular arc while preserving the
+    // same diagonal inset. The longer tangent makes the straight-to-curve
+    // transition gradual instead of changing curvature at a single point.
+    let (shoulder, near_corner) = continuous_corner_parameters(left, top, right, bottom, radius);
+
+    unsafe {
+        let geometry = factory.CreatePathGeometry()?;
+        let sink = geometry.Open()?;
+        sink.BeginFigure(v(left + shoulder, top), D2D1_FIGURE_BEGIN_FILLED);
+        sink.AddLine(v(right - shoulder, top));
+        sink.AddBezier(&D2D1_BEZIER_SEGMENT {
+            point1: v(right - near_corner, top),
+            point2: v(right, top + near_corner),
+            point3: v(right, top + shoulder),
+        });
+        sink.AddLine(v(right, bottom - shoulder));
+        sink.AddBezier(&D2D1_BEZIER_SEGMENT {
+            point1: v(right, bottom - near_corner),
+            point2: v(right - near_corner, bottom),
+            point3: v(right - shoulder, bottom),
+        });
+        sink.AddLine(v(left + shoulder, bottom));
+        sink.AddBezier(&D2D1_BEZIER_SEGMENT {
+            point1: v(left + near_corner, bottom),
+            point2: v(left, bottom - near_corner),
+            point3: v(left, bottom - shoulder),
+        });
+        sink.AddLine(v(left, top + shoulder));
+        sink.AddBezier(&D2D1_BEZIER_SEGMENT {
+            point1: v(left, top + near_corner),
+            point2: v(left + near_corner, top),
+            point3: v(left + shoulder, top),
+        });
+        sink.EndFigure(D2D1_FIGURE_END_CLOSED);
+        sink.Close()?;
+        Ok(geometry)
+    }
+}
+
+fn continuous_corner_parameters(
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+    radius: f32,
+) -> (f32, f32) {
+    let shoulder = (radius * 1.5)
+        .min((right - left) / 2.0)
+        .min((bottom - top) / 2.0);
+    let diagonal_inset = radius * (1.0 - std::f32::consts::FRAC_1_SQRT_2);
+    let near_corner = ((8.0 * diagonal_inset - shoulder) / 3.0).clamp(0.0, shoulder);
+    (shoulder, near_corner)
+}
+
 unsafe fn fill_rounded_f(
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     fill: &ID2D1SolidColorBrush,
     border: &ID2D1SolidColorBrush,
     rect: D2D_RECT_F,
@@ -382,7 +785,7 @@ unsafe fn fill_rounded_f(
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw_icon(
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     stroke_style: &ID2D1StrokeStyle,
     gear_geometry: &ID2D1PathGeometry,
     retry_geometry: &ID2D1PathGeometry,
@@ -501,14 +904,14 @@ unsafe fn draw_icon(
 }
 
 unsafe fn draw_retry_icon(
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     geometry: &ID2D1PathGeometry,
     cx: f32,
     cy: f32,
     brush: &ID2D1SolidColorBrush,
 ) {
     const VIEWBOX_SIZE: f32 = 1024.0;
-    const ICON_SIZE: f32 = 18.0;
+    const ICON_SIZE: f32 = 18.0 * RETRY_BUTTON_SCALE;
 
     let scale = ICON_SIZE / VIEWBOX_SIZE;
     unsafe {
@@ -522,7 +925,7 @@ unsafe fn draw_retry_icon(
             M31: cx - ICON_SIZE / 2.0,
             M32: cy - ICON_SIZE / 2.0,
         });
-        let _ = target.FillGeometry(geometry, brush, None::<&ID2D1Brush>);
+        target.FillGeometry(geometry, brush, None::<&ID2D1Brush>);
         target.SetTransform(&original);
     }
 }
@@ -567,7 +970,7 @@ fn create_retry_geometry(factory: &ID2D1Factory) -> windows::core::Result<ID2D1P
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw_microphone(
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     stroke_style: &ID2D1StrokeStyle,
     cx: f32,
     cy: f32,
@@ -647,7 +1050,7 @@ unsafe fn draw_microphone(
 }
 
 unsafe fn draw_mic_wave(
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     stroke_style: &ID2D1StrokeStyle,
     brush: &ID2D1SolidColorBrush,
     cx: f32,
@@ -667,7 +1070,7 @@ unsafe fn draw_mic_wave(
 }
 
 unsafe fn draw_gear(
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     stroke_style: &ID2D1StrokeStyle,
     geometry: &ID2D1PathGeometry,
     cx: f32,
@@ -821,7 +1224,7 @@ unsafe fn path_arc_absolute(
 
 #[allow(clippy::too_many_arguments)]
 unsafe fn draw_line(
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     stroke_style: &ID2D1StrokeStyle,
     brush: &ID2D1SolidColorBrush,
     width: f32,
@@ -834,7 +1237,7 @@ unsafe fn draw_line(
 }
 
 unsafe fn draw_polyline(
-    target: &ID2D1HwndRenderTarget,
+    target: &ID2D1RenderTarget,
     stroke_style: &ID2D1StrokeStyle,
     brush: &ID2D1SolidColorBrush,
     width: f32,

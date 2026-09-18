@@ -9,15 +9,13 @@ use stt_core::converter::{AudioConverter, ConvertError, paths_equal, settings_fo
 use tokio_util::sync::CancellationToken;
 use windows::Win32::Foundation::HWND;
 use windows::Win32::Graphics::Dwm::{
-    DWMWA_USE_IMMERSIVE_DARK_MODE, DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DWMWCP_ROUND,
-    DwmSetWindowAttribute,
+    DWMWA_BORDER_COLOR, DWMWA_COLOR_NONE, DWMWA_USE_IMMERSIVE_DARK_MODE,
+    DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_DONOTROUND, DwmSetWindowAttribute,
 };
-use windows::Win32::System::Registry::{HKEY_LOCAL_MACHINE, RRF_RT_REG_SZ, RegGetValueW};
 use windows::Win32::UI::HiDpi::{
     DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, GetDpiForSystem, GetDpiForWindow,
     SetProcessDpiAwarenessContext,
 };
-use windows::core::w;
 
 pub fn enable_high_dpi() {
     unsafe {
@@ -37,52 +35,37 @@ pub fn scale(value: i32, dpi: u32) -> i32 {
     ((i64::from(value) * i64::from(dpi) + 48) / 96) as i32
 }
 
+pub fn scale_with_factor(value: i32, dpi: u32, factor: f64) -> i32 {
+    (f64::from(value) * f64::from(dpi) * factor / 96.0).round() as i32
+}
+
 pub fn unscale(value: i32, dpi: u32) -> i32 {
     ((i64::from(value) * 96 + i64::from(dpi / 2)) / i64::from(dpi.max(1))) as i32
+}
+
+pub fn unscale_with_factor(value: i32, dpi: u32, factor: f64) -> i32 {
+    (f64::from(value) * 96.0 / (f64::from(dpi.max(1)) * factor)).round() as i32
 }
 
 pub fn window_opacity_alpha(opacity: f64) -> u8 {
     (opacity.clamp(0.1, 1.0) * 255.0).round() as u8
 }
 
-pub fn supports_rounded_corners() -> bool {
-    let mut buffer = [0_u16; 32];
-    let mut bytes = (buffer.len() * std::mem::size_of::<u16>()) as u32;
-    let result = unsafe {
-        RegGetValueW(
-            HKEY_LOCAL_MACHINE,
-            w!(r"SOFTWARE\Microsoft\Windows NT\CurrentVersion"),
-            w!("CurrentBuildNumber"),
-            RRF_RT_REG_SZ,
-            None,
-            Some(buffer.as_mut_ptr().cast::<c_void>()),
-            Some(&mut bytes),
-        )
-    };
-    if result.0 != 0 {
-        return false;
-    }
-    let length = buffer
-        .iter()
-        .position(|value| *value == 0)
-        .unwrap_or(buffer.len());
-    String::from_utf16_lossy(&buffer[..length])
-        .parse::<u32>()
-        .is_ok_and(|build| build >= 22_000)
-}
-
-pub fn apply_corner_preference(hwnd: HWND, rounded: bool) {
-    let preference = if rounded {
-        DWMWCP_ROUND
-    } else {
-        DWMWCP_DONOTROUND
-    };
+pub fn disable_native_window_frame(hwnd: HWND) {
     unsafe {
+        let preference = DWMWCP_DONOTROUND;
         let _ = DwmSetWindowAttribute(
             hwnd,
             DWMWA_WINDOW_CORNER_PREFERENCE,
             &preference as *const _ as *const c_void,
             std::mem::size_of_val(&preference) as u32,
+        );
+        let border_color = DWMWA_COLOR_NONE;
+        let _ = DwmSetWindowAttribute(
+            hwnd,
+            DWMWA_BORDER_COLOR,
+            &border_color as *const _ as *const c_void,
+            std::mem::size_of_val(&border_color) as u32,
         );
     }
 }

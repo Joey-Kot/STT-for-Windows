@@ -55,7 +55,9 @@ Windows 10 and Windows 11 systems:
   retained delay values, five languages and DPI layout. These require Windows
   desktop validation; cross-compilation does not prove application compatibility;
 - full/minimal sizing, 4 px drag threshold, tray synchronization, taskbar tab;
-- Windows 11 rounded corners versus Windows 10 square behavior;
+- matching antialiased, per-pixel-alpha self-drawn rounded corners on Windows 10
+  and Windows 11 for both floating and settings windows, with no native
+  rectangular border or second DWM corner layer;
 - per-monitor high-DPI movement and rendering;
 - settings tabs, password token edit, five display languages, save/reload;
 - cancel button and Cancel or Retry hotkey abort a blocked ASR request and return to Idle; verify the same hotkey retries the buffered recording while idle in both GUI and CLI;

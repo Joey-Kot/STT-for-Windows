@@ -4,8 +4,8 @@ use std::sync::Arc;
 
 use stt_core::Config;
 use stt_core::runtime::{Event, Runtime, State};
-use windows::Win32::Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
-use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, InvalidateRect, PAINTSTRUCT};
+use windows::Win32::Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM};
+use windows::Win32::Graphics::Gdi::{BeginPaint, EndPaint, PAINTSTRUCT};
 use windows::Win32::System::Com::{COINIT_APARTMENTTHREADED, CoInitializeEx, CoUninitialize};
 use windows::Win32::System::LibraryLoader::GetModuleHandleW;
 use windows::Win32::UI::Controls::WM_MOUSELEAVE;
@@ -15,13 +15,13 @@ use windows::Win32::UI::Input::KeyboardAndMouse::{
 use windows::Win32::UI::WindowsAndMessaging::{
     CREATESTRUCTW, CS_HREDRAW, CS_VREDRAW, CreateWindowExW, DefWindowProcW, DispatchMessageW,
     GWLP_USERDATA, GetCursorPos, GetMessageW, GetWindowLongPtrW, GetWindowRect, HCURSOR,
-    HWND_TOPMOST, IDC_ARROW, IDOK, KillTimer, LWA_ALPHA, LWA_COLORKEY, LoadCursorW, MA_NOACTIVATE,
-    MB_ICONWARNING, MB_OKCANCEL, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW,
-    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SetLayeredWindowAttributes, SetTimer,
-    SetWindowLongPtrW, SetWindowPos, ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CLOSE,
-    WM_COMMAND, WM_CREATE, WM_DESTROY, WM_DPICHANGED, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP,
-    WM_MOUSEACTIVATE, WM_MOUSEMOVE, WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_TIMER,
-    WNDCLASSEXW, WS_EX_LAYERED, WS_EX_NOACTIVATE, WS_EX_TOPMOST, WS_POPUP,
+    HWND_TOPMOST, IDC_ARROW, IDOK, KillTimer, LoadCursorW, MA_NOACTIVATE, MB_ICONWARNING,
+    MB_OKCANCEL, MSG, MessageBoxW, PostMessageW, PostQuitMessage, RegisterClassExW,
+    SW_SHOWNOACTIVATE, SWP_NOACTIVATE, SWP_NOMOVE, SetTimer, SetWindowLongPtrW, SetWindowPos,
+    ShowWindow, TranslateMessage, WINDOW_EX_STYLE, WM_CLOSE, WM_COMMAND, WM_CREATE, WM_DESTROY,
+    WM_DPICHANGED, WM_KEYDOWN, WM_LBUTTONDOWN, WM_LBUTTONUP, WM_MOUSEACTIVATE, WM_MOUSEMOVE,
+    WM_NCCREATE, WM_PAINT, WM_RBUTTONUP, WM_SIZE, WM_TIMER, WNDCLASSEXW, WS_EX_LAYERED,
+    WS_EX_NOACTIVATE, WS_EX_TOPMOST, WS_POPUP,
 };
 use windows::core::{PCWSTR, w};
 
@@ -32,7 +32,9 @@ use crate::render::{
     hit_test_button,
 };
 use crate::resources;
-use crate::settings::{SettingsWindow, WM_LANGUAGE_CHANGED, WM_OPACITY_CHANGED};
+use crate::settings::{
+    SettingsWindow, WM_LANGUAGE_CHANGED, WM_OPACITY_CHANGED, WM_WINDOW_SCALE_CHANGED,
+};
 use crate::taskbar;
 use crate::tray::{COMMAND_MINIMAL, COMMAND_QUIT, COMMAND_SETTINGS, TrayIcon, WM_TRAY};
 
@@ -54,6 +56,8 @@ struct WindowState {
     minimal: bool,
     rounded: bool,
     dpi: u32,
+    window_scale: f64,
+    opacity_alpha: u8,
     event: Event,
     language: Language,
     pressed_button: Option<i32>,
@@ -100,6 +104,7 @@ fn run_inner() -> Result<(), String> {
             .map_err(|error| error.to_string())?;
         config
     };
+    let window_scale = config.window_scale;
     let runtime =
         Runtime::new(config, Arc::new(GuiLibAvConverter)).map_err(|error| error.to_string())?;
     runtime.enable_retry_buffer();
@@ -122,12 +127,13 @@ fn run_inner() -> Result<(), String> {
         return Err(windows::core::Error::from_win32().to_string());
     }
 
-    // Keep one floating-window visual on Windows 10 and 11. Windows 10 safely ignores the
-    // unsupported DWM corner preference while Direct2D still draws the rounded panel.
+    // Direct2D supplies the same per-pixel-alpha outline on Windows 10 and 11; the native
+    // frame is disabled after creation so the system does not add another border or corner.
     let rounded = true;
     let dpi = platform::system_dpi();
     let mut renderer = Renderer::new().map_err(|error| error.to_string())?;
     renderer.set_dpi(dpi);
+    renderer.set_window_scale(window_scale as f32);
     let state = Box::new(WindowState {
         hwnd: HWND::default(),
         runtime: runtime.clone(),
@@ -138,6 +144,8 @@ fn run_inner() -> Result<(), String> {
         minimal: false,
         rounded,
         dpi,
+        window_scale,
+        opacity_alpha: platform::window_opacity_alpha(runtime.config().opacity),
         event: runtime.snapshot(),
         language: Language::load(),
         pressed_button: None,
@@ -164,8 +172,8 @@ fn run_inner() -> Result<(), String> {
             WS_POPUP,
             windows::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
             windows::Win32::UI::WindowsAndMessaging::CW_USEDEFAULT,
-            platform::scale(FULL_WIDTH, dpi),
-            platform::scale(FULL_HEIGHT, dpi),
+            platform::scale_with_factor(FULL_WIDTH, dpi, window_scale),
+            platform::scale_with_factor(FULL_HEIGHT, dpi, window_scale),
             None,
             None,
             Some(instance.into()),
@@ -177,13 +185,9 @@ fn run_inner() -> Result<(), String> {
         error.to_string()
     })?;
     unsafe {
-        set_overlay_opacity(
-            hwnd,
-            platform::window_opacity_alpha(runtime.config().opacity),
-        )
-        .map_err(|error| error.to_string())?;
-        platform::apply_corner_preference(hwnd, rounded);
+        platform::disable_native_window_frame(hwnd);
         let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = redraw_overlay(&mut *raw_state);
         let _ = taskbar::set_visible(hwnd, true);
     }
     let weak = Arc::downgrade(&runtime);
@@ -261,16 +265,7 @@ unsafe extern "system" fn window_proc(
             unsafe {
                 BeginPaint(hwnd, &mut paint);
             }
-            let _ = state.renderer.paint(
-                hwnd,
-                &state.event,
-                state.minimal,
-                state.rounded,
-                state.language,
-                state.pressed_button,
-                &state.hover_lifts,
-                state.animation_time,
-            );
+            let _ = redraw_overlay(state);
             unsafe {
                 let _ = EndPaint(hwnd, &paint);
             }
@@ -280,6 +275,7 @@ unsafe extern "system" fn window_proc(
             let width = (lparam.0 & 0xffff) as u32;
             let height = ((lparam.0 >> 16) & 0xffff) as u32;
             state.renderer.resize(width, height);
+            let _ = redraw_overlay(state);
             LRESULT(0)
         }
         WM_DPICHANGED => {
@@ -300,11 +296,9 @@ unsafe extern "system" fn window_proc(
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
-            let (x, y) = logical_point(lparam, state.dpi);
+            let (x, y) = logical_point(lparam, state.dpi, state.window_scale);
             state.pressed_button = hit_test_button(x, y, state.minimal);
-            unsafe {
-                let _ = InvalidateRect(Some(hwnd), None, false);
-            }
+            let _ = redraw_overlay(state);
             if state.pressed_button.is_some() {
                 unsafe {
                     SetCapture(hwnd);
@@ -330,7 +324,7 @@ unsafe extern "system" fn window_proc(
         }
         WM_MOUSEMOVE => {
             track_mouse_leave(state);
-            let (x, y) = logical_point(lparam, state.dpi);
+            let (x, y) = logical_point(lparam, state.dpi, state.window_scale);
             if state.drag_active {
                 let mut cursor = POINT::default();
                 unsafe {
@@ -339,7 +333,8 @@ unsafe extern "system" fn window_proc(
                 let delta_x = cursor.x - state.drag_start_cursor.x;
                 let delta_y = cursor.y - state.drag_start_cursor.y;
                 if !state.drag_moved
-                    && delta_x.abs() + delta_y.abs() >= platform::scale(4, state.dpi)
+                    && delta_x.abs() + delta_y.abs()
+                        >= platform::scale_with_factor(4, state.dpi, state.window_scale)
                 {
                     state.drag_moved = true;
                 }
@@ -371,19 +366,15 @@ unsafe extern "system" fn window_proc(
         }
         WM_TIMER if wparam.0 == ANIMATION_TIMER_ID => {
             if advance_animation(state) {
-                unsafe {
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
+                let _ = redraw_overlay(state);
             }
             LRESULT(0)
         }
         WM_LBUTTONUP => {
-            let (x, y) = logical_point(lparam, state.dpi);
+            let (x, y) = logical_point(lparam, state.dpi, state.window_scale);
             let released = hit_test_button(x, y, state.minimal);
             let pressed = state.pressed_button.take();
-            unsafe {
-                let _ = InvalidateRect(Some(hwnd), None, false);
-            }
+            let _ = redraw_overlay(state);
             let moved = state.drag_moved;
             if state.drag_active {
                 state.drag_active = false;
@@ -442,23 +433,26 @@ unsafe extern "system" fn window_proc(
             } else if !hover_transition_pending(state) {
                 stop_animation_timer(state);
             }
-            unsafe {
-                let _ = InvalidateRect(Some(hwnd), None, false);
-            }
+            let _ = redraw_overlay(state);
             LRESULT(0)
         }
         WM_LANGUAGE_CHANGED => {
             if let Some(language) = Language::ALL.get(wparam.0).copied() {
                 state.language = language;
-                unsafe {
-                    let _ = InvalidateRect(Some(hwnd), None, false);
-                }
+                let _ = redraw_overlay(state);
             }
             LRESULT(0)
         }
         WM_OPACITY_CHANGED => {
-            let alpha = wparam.0.min(u8::MAX as usize) as u8;
-            let _ = set_overlay_opacity(hwnd, alpha);
+            state.opacity_alpha = wparam.0.min(u8::MAX as usize) as u8;
+            let _ = redraw_overlay(state);
+            LRESULT(0)
+        }
+        WM_WINDOW_SCALE_CHANGED => {
+            state.window_scale = state.runtime.config().window_scale;
+            state.renderer.set_window_scale(state.window_scale as f32);
+            resize_overlay(state);
+            let _ = redraw_overlay(state);
             LRESULT(0)
         }
         WM_ESCAPE_COMMAND => {
@@ -491,8 +485,18 @@ unsafe extern "system" fn window_proc(
     }
 }
 
-fn set_overlay_opacity(hwnd: HWND, alpha: u8) -> windows::core::Result<()> {
-    unsafe { SetLayeredWindowAttributes(hwnd, COLORREF(0), alpha, LWA_COLORKEY | LWA_ALPHA) }
+fn redraw_overlay(state: &mut WindowState) -> windows::core::Result<()> {
+    state.renderer.paint(
+        state.hwnd,
+        &state.event,
+        state.minimal,
+        state.rounded,
+        state.language,
+        state.pressed_button,
+        &state.hover_lifts,
+        state.animation_time,
+        state.opacity_alpha,
+    )
 }
 
 fn show_tray_menu(state: &mut WindowState) {
@@ -550,7 +554,13 @@ fn set_minimal(state: &mut WindowState, minimal: bool) {
     if minimal {
         close_settings(state);
     }
-    let (width, height) = if minimal {
+    resize_overlay(state);
+    let _ = taskbar::set_visible(state.hwnd, !minimal);
+    let _ = redraw_overlay(state);
+}
+
+fn resize_overlay(state: &WindowState) {
+    let (width, height) = if state.minimal {
         (MINIMAL_WIDTH, MINIMAL_HEIGHT)
     } else {
         (FULL_WIDTH, FULL_HEIGHT)
@@ -561,12 +571,10 @@ fn set_minimal(state: &mut WindowState, minimal: bool) {
             Some(HWND_TOPMOST),
             0,
             0,
-            platform::scale(width, state.dpi),
-            platform::scale(height, state.dpi),
+            platform::scale_with_factor(width, state.dpi, state.window_scale),
+            platform::scale_with_factor(height, state.dpi, state.window_scale),
             SWP_NOMOVE | SWP_NOACTIVATE,
         );
-        let _ = taskbar::set_visible(state.hwnd, !minimal);
-        let _ = InvalidateRect(Some(state.hwnd), None, false);
     }
 }
 
@@ -656,9 +664,12 @@ fn point_from_lparam(lparam: LPARAM) -> (i32, i32) {
     (x, y)
 }
 
-fn logical_point(lparam: LPARAM, dpi: u32) -> (i32, i32) {
+fn logical_point(lparam: LPARAM, dpi: u32, window_scale: f64) -> (i32, i32) {
     let (x, y) = point_from_lparam(lparam);
-    (platform::unscale(x, dpi), platform::unscale(y, dpi))
+    (
+        platform::unscale_with_factor(x, dpi, window_scale),
+        platform::unscale_with_factor(y, dpi, window_scale),
+    )
 }
 
 fn track_mouse_leave(state: &mut WindowState) {

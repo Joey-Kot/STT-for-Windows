@@ -31,6 +31,7 @@ defaults. Missing fields receive defaults and unknown fields are ignored.
 | `TEXT_PATH` | `"text"` | Dot path with repeated array indexes |
 | `ExtraConfig` | `""` | Must be a JSON object when non-empty |
 | `OPACITY` | `1.0` | GUI floating-window opacity; `0.10`–`1.00` in `0.01` steps, where `1.0` is fully opaque |
+| `WINDOW_SCALE` | `1.0` | GUI floating-window scale; `0.3`–`2.0` in `0.1` steps, shared by full and minimal modes |
 | `CHANNELS` | `1` | Inclusive range 1–8 |
 | `SAMPLING_RATE` | `16000` | Greater than zero |
 | `SAMPLING_RATE_DEPTH` | `16` | 8, 16, 24, or 32 |
@@ -193,19 +194,22 @@ WebView or embedded browser runtime.
 - Full window: 222×94 logical pixels.
 - Minimal window: 170×46 logical pixels.
 - Settings window: 760×620 logical pixels.
-- Frameless, transparent/color-keyed, always on top, per-monitor DPI aware.
+- Frameless, per-pixel-alpha layered, always on top, per-monitor DPI aware.
 - Drag threshold is about 4 px; dragging minimal mode from the microphone does
   not activate recording on release.
 - Minimal hides settings/status and removes the taskbar tab.
-- Full and minimal floating panels always use the same 8 logical pixel Direct2D
-  corner radius and request rounded DWM corners; Windows versions without that
-  DWM attribute keep the app-drawn shape.
+- Full and minimal floating panels always use the same 10 logical pixel Direct2D
+  continuous-corner profile, with a fully inset 1 px outline. The layered HWND
+  is composed from Direct2D premultiplied-alpha pixels on Windows 10 and Windows
+  11, preserving antialiased edges; native DWM rounding and the Windows 11 border
+  are disabled so no second outer shape is added.
 - Tray menu remains Minimal, Settings, Quit and emits no balloon.
 - Settings use native tab/edit/button/checkbox/combobox controls. Token is a
-  password edit. Display languages are English, Simplified Chinese, German,
-  Japanese, and French.
-- The Display page controls the shared opacity of the full and minimal floating
-  windows.
+  password edit. Its outer frame uses the same 10 logical pixel continuous-corner
+  profile as the floating panels while preserving native child controls. Display
+  languages are English, Simplified Chinese, German, Japanese, and French.
+- The Display page controls the shared opacity and scale of the full and minimal
+  floating windows.
 - Config writes `%APPDATA%\stt\config.json`, then validates and reloads runtime
   dependencies/hotkeys. Saving is allowed only in Idle or Error.
 - Escape closes settings first; busy quit shows a native confirmation dialog.
