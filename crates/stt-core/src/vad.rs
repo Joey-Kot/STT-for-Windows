@@ -2,7 +2,10 @@
 use crate::{audio_intervals::AudioInterval, converter::ConvertError};
 
 const FRAME: usize = 256;
-const START_FRAMES: u64 = 2;
+const START_THRESHOLD: f32 = 0.9;
+const CONTINUE_THRESHOLD: f32 = 0.5;
+const START_FRAMES: u64 = 3;
+const LOOKBACK_FRAMES: u64 = 6;
 const MIN_VOICE_FRAMES: u64 = 4;
 const END_SILENCE_FRAMES: u64 = 10;
 
@@ -42,14 +45,14 @@ impl Vad {
             self.used += n;
             samples = &samples[n..];
             if self.used == FRAME {
-                let voice = self.detector.predict_i16(&self.pending) >= 0.5;
-                self.accept(voice, FRAME as u64)?;
+                let score = self.detector.predict_i16(&self.pending);
+                self.accept(score, FRAME as u64)?;
                 self.used = 0;
             }
         }
         Ok(())
     }
-    fn accept(&mut self, voice: bool, samples: u64) -> Result<(), ConvertError> {
+    fn accept(&mut self, score: f32, samples: u64) -> Result<(), ConvertError> {
         let start = self.position;
         self.position = self
             .position
@@ -57,12 +60,24 @@ impl Vad {
             .ok_or_else(|| ConvertError::Failed {
                 message: "VAD position overflow".into(),
             })?;
-        if voice {
-            self.candidate.get_or_insert(start);
+        if score >= CONTINUE_THRESHOLD {
+            let candidate = self.candidate.get_or_insert(start);
             self.voiced += 1;
-            self.consecutive += 1;
             self.last_voice_end = self.position;
-            self.active |= self.consecutive >= START_FRAMES;
+            if !self.active {
+                // Include the confirmation frames in the six-frame lookback.
+                // Before activation all candidate frames meet the continuation
+                // threshold, so trimming the window also caps its voice count.
+                *candidate =
+                    (*candidate).max(start.saturating_sub((LOOKBACK_FRAMES - 1) * FRAME as u64));
+                self.voiced = self.voiced.min(LOOKBACK_FRAMES);
+                self.consecutive = if score >= START_THRESHOLD {
+                    self.consecutive + 1
+                } else {
+                    0
+                };
+                self.active = self.consecutive >= START_FRAMES;
+            }
         } else {
             self.consecutive = 0;
             if !self.active {
@@ -95,8 +110,8 @@ impl Vad {
     pub fn finish(mut self) -> Result<Vec<AudioInterval>, ConvertError> {
         if self.used > 0 {
             self.pending[self.used..].fill(0);
-            let voice = self.detector.predict_i16(&self.pending) >= 0.5;
-            self.accept(voice, self.used as u64)?;
+            let score = self.detector.predict_i16(&self.pending);
+            self.accept(score, self.used as u64)?;
         }
         self.close()?;
         Ok(self.intervals)
@@ -117,15 +132,15 @@ mod tests {
     #[test]
     fn hysteresis_flush_and_short_bursts() {
         let mut vad = Vad::default();
-        vad.accept(true, 256).unwrap();
-        vad.accept(false, 256).unwrap();
+        vad.accept(0.9, 256).unwrap();
+        vad.accept(0.0, 256).unwrap();
         for _ in 0..4 {
-            vad.accept(true, 256).unwrap();
+            vad.accept(0.9, 256).unwrap();
         }
         for _ in 0..5 {
-            vad.accept(false, 256).unwrap();
+            vad.accept(0.0, 256).unwrap();
         }
-        vad.accept(true, 17).unwrap();
+        vad.accept(0.5, 17).unwrap();
         assert_eq!(
             vad.finish().unwrap(),
             vec![AudioInterval {
@@ -134,7 +149,68 @@ mod tests {
             }]
         );
         let mut vad = Vad::default();
-        vad.accept(true, 17).unwrap();
+        vad.accept(0.9, 17).unwrap();
         assert!(vad.finish().unwrap().is_empty());
+    }
+
+    #[test]
+    fn startup_requires_three_consecutive_high_scores() {
+        let mut vad = Vad::default();
+        for score in [0.5, 0.89, 0.9, 0.9, 0.89, 0.9, 0.9] {
+            vad.accept(score, FRAME as u64).unwrap();
+        }
+        assert!(vad.finish().unwrap().is_empty());
+    }
+
+    #[test]
+    fn lookback_is_bounded_and_weak_speech_continues() {
+        let mut vad = Vad::default();
+        for _ in 0..20 {
+            vad.accept(0.5, FRAME as u64).unwrap();
+        }
+        for _ in 0..3 {
+            vad.accept(0.9, FRAME as u64).unwrap();
+        }
+        assert_eq!(vad.voiced, LOOKBACK_FRAMES);
+        for _ in 0..2 {
+            vad.accept(0.5, FRAME as u64).unwrap();
+        }
+        for _ in 0..END_SILENCE_FRAMES - 1 {
+            vad.accept(0.49, FRAME as u64).unwrap();
+        }
+        assert!(vad.intervals.is_empty());
+        vad.accept(0.49, FRAME as u64).unwrap();
+        assert_eq!(
+            vad.finish().unwrap(),
+            vec![AudioInterval {
+                start_frame: 17 * FRAME as u64,
+                end_frame: 25 * FRAME as u64,
+            }]
+        );
+    }
+
+    #[test]
+    fn silence_resets_candidate_and_three_frames_are_discarded() {
+        let mut vad = Vad::default();
+        for score in [0.5, 0.9, 0.9, 0.49, 0.9, 0.9, 0.9] {
+            vad.accept(score, FRAME as u64).unwrap();
+        }
+        assert!(vad.finish().unwrap().is_empty());
+    }
+
+    #[test]
+    fn partial_tail_counts_as_one_voice_frame_with_real_endpoint() {
+        let mut vad = Vad::default();
+        for _ in 0..3 {
+            vad.accept(0.9, FRAME as u64).unwrap();
+        }
+        vad.accept(0.5, 17).unwrap();
+        assert_eq!(
+            vad.finish().unwrap(),
+            vec![AudioInterval {
+                start_frame: 0,
+                end_frame: 3 * FRAME as u64 + 17,
+            }]
+        );
     }
 }
