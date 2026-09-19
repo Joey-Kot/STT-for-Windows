@@ -1,5 +1,12 @@
 # Rust technical validation record
 
+## Microphone selection and native-format capture update
+
+The current WASAPI backend supersedes the PortAudio/WMME and capture-rate
+fallback descriptions in the historical records below. See
+[microphone selection validation](microphone-selection-validation.md) for the
+current automated results and outstanding Windows hardware/GUI checks.
+
 ## VAD and shared embedded audio validation
 
 The implementation adds a pinned Earshot 1.2.2 detector, streaming analysis,

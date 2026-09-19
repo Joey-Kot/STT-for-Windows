@@ -30,6 +30,8 @@ tokio = { version = "1.47.1", features = ["fs", "io-util", "macros", "process", 
 tokio-util = { version = "0.7.16", features = ["io", "rt"] }
 uuid = { version = "1.18.0", features = ["v4"] }
 windows = { version = "0.61.3", features = [
+    "Win32_Devices_FunctionDiscovery",
+    "Win32_Media_Audio",
     "Win32_Foundation",
     "Win32_Graphics_Direct2D",
     "Win32_Graphics_Direct2D_Common",
@@ -40,6 +42,8 @@ windows = { version = "0.61.3", features = [
     "Win32_Security",
     "Win32_Storage_FileSystem",
     "Win32_System_Com",
+    "Win32_System_Com_StructuredStorage",
+    "Win32_System_Variant",
     "Win32_System_DataExchange",
     "Win32_System_LibraryLoader",
     "Win32_System_Memory",
@@ -51,6 +55,7 @@ windows = { version = "0.61.3", features = [
     "Win32_UI_HiDpi",
     "Win32_UI_Input_KeyboardAndMouse",
     "Win32_UI_Shell",
+    "Win32_UI_Shell_PropertiesSystem",
     "Win32_UI_WindowsAndMessaging",
 ] }
 

@@ -6,7 +6,7 @@ STT for Windows is a local speech-to-text client for Windows x86_64. It records 
 
 The project provides two Rust programs:
 
-- `STT.exe`: a native Win32 GUI that statically links PortAudio and a trimmed FFmpeg/libav build, ready to run after extraction.
+- `STT.exe`: a native Win32 GUI using Windows WASAPI capture and a statically linked, trimmed FFmpeg/libav build, ready to run after extraction.
 - `stt.exe`: a command-line program that supports hotkey-controlled recording and transcription of existing audio files, using the same embedded libav converter as the GUI; no system FFmpeg is required.
 
 The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
@@ -37,6 +37,7 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
   - Uses `TEXT_PATH` to read text from JSON responses, including nested objects and repeated array indexes.
   - Saves the original clipboard text, sends `Ctrl+V`, and then attempts to restore it.
 - **Shared embedded audio processing**
+  - GUI and CLI share microphone discovery, stable endpoint selection, and device-format capture in `stt-core`.
   - Both programs statically link libav and never search for or launch an external FFmpeg executable.
   - Optional Earshot VAD detects speech on a 16 kHz mono branch and trims the original audio.
 - **Caching and diagnostics**
@@ -61,7 +62,7 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
 
 ## Architecture
 
-`stt-core` handles configuration, recording, the runtime state machine, ASR requests, caching, hotkeys, and clipboard operations. The GUI and CLI provide different interaction models and share audio processing.
+`stt-core` handles configuration, microphone discovery and selection, capture-format negotiation, recording, the runtime state machine, ASR requests, caching, hotkeys, and clipboard operations. GUI and CLI share these implementations.
 
 ```mermaid
 flowchart LR
@@ -75,8 +76,8 @@ flowchart LR
     CLI --> Runtime
     FileMode --> FilePipeline["File transcription pipeline"]
 
-    Runtime --> Recorder["PortAudio<br/>Microphone recording"]
-    Recorder --> WAV["PCM 16-bit WAV"]
+    Runtime --> Recorder["WASAPI<br/>Selected microphone / system default"]
+    Recorder --> WAV["WAV preserving capture rate, channels and precision"]
 
     WAV --> Convert["Recording conversion abstraction"]
     WAV --> RetryBuffer["GUI and CLI retry buffer<br/>latest completed WAV, memory only, ≤100 MB"]
@@ -104,7 +105,7 @@ sequenceDiagram
     actor User
     participant Control as GUI / global hotkeys
     participant Runtime as Rust state machine
-    participant Recorder as PortAudio
+    participant Recorder as WASAPI
     participant Converter as embedded libav
     participant ASR as ASR HTTP API
     participant Clipboard as Windows clipboard
@@ -118,7 +119,7 @@ sequenceDiagram
     opt Pause and resume
         User->>Control: Pause / resume
         Control->>Runtime: toggle pause
-        Runtime->>Recorder: Stop or resume audio reads
+        Runtime->>Recorder: Stop capture or discard buffered data and resume
     end
 
     User->>Control: Stop
@@ -228,7 +229,7 @@ The retry buffer is replaced only when a new recording is completed. Canceling w
 
 - Current releases provide Windows x86_64 builds only.
 - The GUI is a native Windows-only application. The CLI source can be compiled on other systems, but global Windows hotkeys are available only on Windows.
-- Recording uses the system default input device. There is currently no microphone device selector.
+- Microphone capture and enumeration require Windows. GUI and CLI support a selected input endpoint or the system default; devices are resolved at each recording start.
 - The complete audio file is uploaded after recording; real-time streaming transcription is not supported.
 - The ASR endpoint must accept `multipart/form-data` and return JSON.
 - Only HTTP 200 is treated as success. Other status codes enter the retry or failure path.
@@ -244,7 +245,7 @@ The retry buffer is replaced only when a new recording is completed. Canceling w
 ### GUI
 
 - Windows 10 or Windows 11 x86_64.
-- A working default microphone input device.
+- A working microphone input device.
 - A compatible ASR HTTP endpoint.
 - No FFmpeg, PortAudio, WebView2, or Visual C++ Redistributable installation is required.
 
@@ -260,7 +261,7 @@ The retry buffer is replaced only when a new recording is completed. Canceling w
 - Rust 1.97 or newer.
 - The Rust `x86_64-pc-windows-gnu` target.
 - MinGW-w64, C/C++ build tools, `pkg-config`, Autoconf, Automake, Libtool, NASM, YASM, and XZ tools.
-- Network access to obtain the PortAudio, FFmpeg, and codec sources when building the static audio dependencies.
+- Network access to obtain FFmpeg and codec sources when building the static audio dependencies.
 
 ## GUI usage
 
@@ -306,7 +307,7 @@ Full mode displays a taskbar tab. Minimal mode hides the taskbar tab while retai
 |---|---|
 | Display | Interface language, configuration file location, floating-window opacity, and floating-window scale |
 | API | Endpoint, token, model, language, prompt, text path, and extra fields |
-| Audio | Channels, output sample rate, sample depth, bitrate, codec, container, VAD, and padding |
+| Audio | Microphone (first item), output channels, output sample rate, output sample depth, bitrate, codec, container, VAD, and padding |
 | Network | Timeout, retries, HTTP/2, and TLS verification |
 | Hotkeys | Three hotkeys, low-level hook, clipboard wait intervals, and Use SendInput |
 | Cache | Cache directory, cache retention, and request-failure placeholder text |
@@ -315,9 +316,13 @@ Full mode displays a taskbar tab. Minimal mode hides the taskbar tab while retai
 
 Settings can be saved only in the `Idle` or `Error` state. When settings are saved, the application validates the configuration, rebuilds the ASR client and recorder, and registers the hotkeys again.
 
+The first Audio option is **Microphone**, styled like the Display language dropdown. Its first choice is **Follow system default**. Opening settings or the dropdown refreshes active recording inputs in the background; long lists and names can be scrolled. Choose a microphone and save to apply it to the next recording; Cancel discards the selection. An offline selection remains visible as **Device unavailable** and causes an error at recording start instead of silently switching microphones. Endpoint IDs distinguish devices with identical names.
+
+The Display language and Microphone dropdowns share a single rounded panel with padding, using the app's dark and teal palette. Selected and hovered options have distinct background colors.
+
 ### Exit
 
-- Pressing `Esc` closes the settings window first. If settings are not open, it starts the exit flow.
+- Pressing `Esc` in the microphone list closes that list first; otherwise it closes the settings window, or starts the exit flow if settings are not open.
 - Exiting while recording, paused, or uploading displays a confirmation dialog.
 - Exiting cancels recording and the active request, removes the tray icon, and stops the hotkey thread.
 
@@ -339,6 +344,8 @@ Command-line overrides > JSON selected by --config > config.json in the current 
 If `--config` is not provided, the current directory does not contain `config.json`, and no configuration override is supplied, the CLI creates a default `config.json`, prints its path, and exits. Edit the file and run the program again.
 
 All long options use the standard double-hyphen form. Boolean options require an explicit `true` or `false` value. Legacy single-hyphen long options and the removed `--notification` option are not supported.
+
+`--list-input-devices` is a query that exits before loading or creating configuration, registering hotkeys, or accessing the ASR service. CLI overrides are not saved to the JSON file.
 
 ### Hotkey mode
 
@@ -365,6 +372,50 @@ Use command-line overrides only:
 ```
 
 After startup, the program prints state changes to the terminal. Press `Ctrl+C` to exit.
+
+### Microphone selection
+
+When writing a CLI configuration by hand, first select a specific device under **Audio → Microphone** in the GUI and save. Open the configuration file shown in the settings window (default: `%APPDATA%\stt\config.json`), then copy `INPUT_DEVICE` and `INPUT_DEVICE_NAME` into your custom configuration. For example, merge these fields into your JSON configuration:
+
+```json
+{
+  "INPUT_DEVICE": "{0.0.1.00000000}.{eaad28b1-baf2-4299-ae4e-4264defe0ab0}",
+  "INPUT_DEVICE_NAME": "麦克风 (Razer Seiren Mini)"
+}
+```
+
+This endpoint ID is only an example; use the actual values saved on your computer. `INPUT_DEVICE` identifies the device. `INPUT_DEVICE_NAME` is display-only metadata; a name alone cannot select a microphone.
+
+Keep both fields as empty strings to follow the system default microphone:
+
+```json
+{
+  "INPUT_DEVICE": "",
+  "INPUT_DEVICE_NAME": ""
+}
+```
+
+When **Follow system default** is selected in the GUI, both saved fields remain empty even if the dropdown also shows the current default microphone's name. Select the device itself to keep using that specific microphone. Load your saved custom configuration with `--config`:
+
+```powershell
+.\stt.exe --config .\my-config.json
+```
+
+List active microphones and copy the desired stable endpoint ID:
+
+```powershell
+.\stt.exe --list-input-devices
+.\stt.exe --config .\config.json --input-device "<endpoint ID from the list>"
+.\stt.exe --config .\config.json --input-device default
+```
+
+`default` explicitly overrides a saved selection for this run. Without `--input-device`, the CLI uses `INPUT_DEVICE` from the loaded config. To use the selection saved by the GUI, load its configuration explicitly:
+
+```powershell
+.\stt.exe --config "$env:APPDATA\stt\config.json"
+```
+
+The list marks the current system default. A successful query, including an empty list, exits with `0`; enumeration errors exit with `1`. Device availability is checked again at recording start. File mode does not open a microphone.
 
 ### File mode
 
@@ -406,8 +457,10 @@ If `--output` is omitted, the default output is `<input-file-name>.txt` in the c
 | Option | Purpose |
 |---|---|
 | `--codecs <CODEC>` | Overrides the audio codec |
+| `--list-input-devices` | Lists active microphones, stable IDs and the system default, then exits |
+| `--input-device <ID>` | Selects a microphone for this run; `default` follows the system default |
 | `--container <FORMAT>` | Overrides the audio container |
-| `--channels <N>` | Overrides the channel count |
+| `--channels <N>` | Overrides the final upload channel count |
 | `--sampling-rate <HZ>` | Overrides the final upload sample rate; `--rate` is a compatibility alias |
 | `--sampling-rate-depth <BITS>` | Overrides the conversion sample depth |
 | `--bit-rate <KBPS>` | Overrides the audio bitrate |
@@ -474,6 +527,8 @@ The GUI and CLI use the same JSON data structure. Missing fields receive their d
   "ExtraConfig": "{\"response_format\":\"json\",\"temperature\":0}",
   "OPACITY": 1.0,
   "WINDOW_SCALE": 1.0,
+  "INPUT_DEVICE": "",
+  "INPUT_DEVICE_NAME": "",
   "CHANNELS": 1,
   "SAMPLING_RATE": 16000,
   "ENABLE_VAD": false,
@@ -528,18 +583,26 @@ This is only a protocol example. The actual model name, fields, supported audio 
 
 | Field | Default | Validation and behavior |
 |---|---:|---|
-| `CHANNELS` | `1` | Allowed range: 1–8; used by both recording and conversion |
+| `INPUT_DEVICE` | `""` | Stable Windows capture endpoint ID; empty or missing follows the system default at each recording start |
+| `INPUT_DEVICE_NAME` | `""` | Display-only cached name for an offline selection; never used to identify a device |
+| `CHANNELS` | `1` | Allowed range: 1–8; final upload channels only |
 | `SAMPLING_RATE` | `16000` | Final upload sample rate, greater than 0, in Hz |
-| `SAMPLING_RATE_DEPTH` | `16` | Allowed values: 8, 16, 24, or 32; affects conversion only and does not change the recorded WAV from PCM 16-bit |
+| `SAMPLING_RATE_DEPTH` | `16` | Allowed values: 8, 16, 24, or 32; output sample-depth preference subject to encoder support, independent of capture |
 | `BIT_RATE` | `32` | Must be greater than 0, in kbps |
 | `CODECS` | `"opus"` | Encoder name or compatible alias, case-insensitive |
 | `CONTAINER` | `"ogg"` | Output container/extension, case-insensitive |
 
 Common outputs covered by the shared static build include Opus/Ogg, MP3, AAC, FLAC, Vorbis, and WAV/PCM. The build also includes several additional encoders and muxers; the selected codec and container must form a valid combination.
 
+Explicit PCM codec names determine output depth: for example, `pcm_s24le` produces 24-bit PCM. The existing `pcm` alias means `pcm_s16le`; setting the depth field alone does not change that alias.
+
 ### Speech detection and capture
 
-Microphone capture prefers 48 kHz PCM 16-bit, falling back to the default device rate and then the configured output rate. The WAV header preserves the actual rate. `SAMPLING_RATE` only sets the final upload rate.
+Core opens the selected endpoint in WASAPI shared mode, preferring its Windows-configured default format. If that format cannot be queried or is unsupported in shared mode, it uses the same endpoint's audio-engine mix format. Failure to open that endpoint is reported without switching devices. The mix format can be floating point even when the physical microphone uses integer samples.
+
+Capture rate, channel count and precision are independent of `SAMPLING_RATE`, `CHANNELS` and `SAMPLING_RATE_DEPTH`. Temporary WAVs preserve the actual rate, channel layout and effective precision; integer padding bytes may be removed losslessly (for example, 24 valid bits in a 32-bit capture container are stored as packed 24-bit PCM). `RECORD_DEBUG` reports the endpoint, actual capture format and whether the engine-format fallback was used. The output settings are applied when encoding the upload file.
+
+With **Follow system default**, changing the Windows default affects the next recording. A fixed selection remains fixed until changed; disconnecting it causes an error, and reconnecting it allows another attempt. Active recordings are never moved to another endpoint. Pausing stops capture; resuming discards pre-pause buffered samples.
 
 | Field | Default | Behavior |
 |---|---:|---|
@@ -756,7 +819,6 @@ cargo check --workspace \
 ### Build native dependencies and programs
 
 ```bash
-scripts/build-portaudio-windows-amd64.sh
 scripts/build-ffmpeg-windows-amd64.sh
 scripts/build-rust-windows-amd64.sh
 scripts/package-windows-release.sh
@@ -771,13 +833,13 @@ dist/stt-cli-windows-amd64.zip
 dist/stt-gui-windows-amd64.zip
 ```
 
-`scripts/build-portaudio-windows-amd64.sh` builds the PortAudio WMME backend without WASAPI. After using `--disable-everything`, `scripts/build-ffmpeg-windows-amd64.sh` enables file protocol; wav/mp3/flac/ogg/mov/aac/matroska/wv/ac3/eac3 demuxers; corresponding PCM, MP3/MP2, FLAC, Opus, Vorbis, AAC, ALAC, WavPack, AC3/EAC3 decoders and parsers; and the existing output encoders/muxers. libavfilter is disabled. Both programs enable the shared `stt-core/static-libav` feature. Earshot is pinned to 1.2.2.
+Capture uses Windows system WASAPI APIs and requires no PortAudio build or library. After using `--disable-everything`, `scripts/build-ffmpeg-windows-amd64.sh` enables file protocol; wav/mp3/flac/ogg/mov/aac/matroska/wv/ac3/eac3 demuxers; corresponding PCM, MP3/MP2, FLAC, Opus, Vorbis, AAC, ALAC, WavPack, AC3/EAC3 decoders and parsers; and the existing output encoders/muxers. libavfilter is disabled. Both programs enable the shared `stt-core/static-libav` feature. Earshot is pinned to 1.2.2.
 
 GitHub Actions also verifies:
 
 - Formatting, tests, and `clippy -D warnings`.
 - Windows API and MinGW target compilation.
-- The PortAudio backend includes WMME and excludes WASAPI.
+- The GUI embeds a Common Controls v6 manifest required by its dropdown subclass helpers.
 - The FFmpeg build does not enable `nonfree`.
 - CLI and GUI include both `keybd_event` and `SendInput` for the two selectable input channels.
 - The GUI does not contain the external FFmpeg backend.
@@ -799,8 +861,8 @@ After a successful build, the workflow updates the `Latest` tag and Release, the
 
 ## Implementation constraints
 
-- Recording: PortAudio C blocking API, default input device, and WMME; WASAPI is not used.
-- Recording format: interleaved signed int16; temporary WAV files are always PCM 16-bit.
+- Recording: shared core WASAPI capture, stable endpoint IDs, with system-default resolution at recording start.
+- Recording format: device-default PCM or same-device engine mix format; integer and float samples retain their effective precision in temporary WAVs.
 - GUI conversion: statically linked libav C ABI; does not launch `ffmpeg.exe`.
 - CLI conversion: the same embedded libav converter and cancellation callbacks as the GUI.
 - GUI: Win32 message loop, Direct2D, DirectWrite, and native controls; no embedded WebView.
@@ -811,6 +873,8 @@ After a successful build, the workflow updates the `Latest` tag and Release, the
 
 For precise compatibility behavior, see the [Rust rewrite compatibility contract](docs/rust-rewrite-contract.md). For the boundary between automated and manual validation, see the [Rust technical validation record](docs/rust-technical-validation.md).
 
+The [microphone selection validation record](docs/microphone-selection-validation.md) covers automated format/VAD tests, user-reported Windows manual validation, and the hardware regression checklist.
+
 ## Repository layout
 
 | Component | Path | Purpose / output |
@@ -819,7 +883,7 @@ For precise compatibility behavior, see the [Rust rewrite compatibility contract
 | CLI | `crates/stt-cli/` | `stt.exe` |
 | Native GUI | `crates/stt-gui/` | `STT.exe` |
 | libav bridge | `native/` | C ABI shared by GUI and CLI |
-| Build scripts | `scripts/` | PortAudio, FFmpeg, Rust, and release package builds |
+| Build scripts | `scripts/` | FFmpeg, Rust, and release package builds; legacy PortAudio script retained for reference |
 | Windows resources | `assets/` | Application icon and other resources |
 | Example configurations | `examples/` | Provider configuration examples |
 | Behavior and validation documentation | `docs/` | Rust compatibility contract and technical validation record |
@@ -830,7 +894,6 @@ For precise compatibility behavior, see the [Rust rewrite compatibility contract
 Both release packages statically link:
 
 - FFmpeg/libav n7.1.1
-- PortAudio v19.7.0
 - Opus v1.5.2
 - LAME 3.100
 - libogg 1.3.5

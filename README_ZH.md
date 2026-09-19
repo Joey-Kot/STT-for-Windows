@@ -6,7 +6,7 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
 
 项目包含两个 Rust 程序：
 
-- `STT.exe`：原生 Win32 图形界面，静态链接 PortAudio 和裁剪版 FFmpeg/libav，解压即可运行。
+- `STT.exe`：原生 Win32 图形界面，使用 Windows WASAPI 采集音频，静态链接裁剪版 FFmpeg/libav，解压即可运行。
 - `stt.exe`：命令行程序，支持快捷键录音和现有音频文件转写，与 GUI 共用内嵌 libav 转换器，无需安装系统 FFmpeg。
 
 当前使用 Rust、Win32、Direct2D 和 DirectWrite 实现。
@@ -37,6 +37,7 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
   - 使用 `TEXT_PATH` 从 JSON 响应中读取文本，支持多层对象和重复数组索引。
   - 暂存原剪贴板文本，发送 `Ctrl+V` 后再尝试恢复。
 - **共享内嵌音频处理**
+  - GUI 和 CLI 共用 `stt-core` 的麦克风枚举、稳定设备标识选择和设备默认格式采集。
   - 两个程序均静态链接 libav，不搜索或启动外部 FFmpeg。
   - 可选 Earshot VAD 在 16 kHz 单声道支路检测语音，裁剪使用原始音频。
 - **缓存与诊断**
@@ -61,7 +62,7 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
 
 ## 架构
 
-`stt-core` 负责配置、录音、状态机、ASR、缓存、快捷键和剪贴板。GUI 与 CLI 只提供不同的交互方式，共用音频处理实现。
+`stt-core` 负责配置、麦克风枚举与选择、采集格式协商、录音、状态机、ASR、缓存、快捷键和剪贴板。GUI 与 CLI 共用这些实现。
 
 ```mermaid
 flowchart LR
@@ -75,8 +76,8 @@ flowchart LR
     CLI --> Runtime
     FileMode --> FilePipeline["文件转写流程"]
 
-    Runtime --> Recorder["PortAudio<br/>麦克风录音"]
-    Recorder --> WAV["PCM 16-bit WAV"]
+    Runtime --> Recorder["WASAPI<br/>指定麦克风 / 系统默认"]
+    Recorder --> WAV["保留采集采样率、声道和精度的 WAV"]
 
     WAV --> Convert["录音音频转换抽象"]
     WAV --> RetryBuffer["GUI 和 CLI 重试缓冲<br/>最近一条已结束 WAV，仅内存，≤100 MB"]
@@ -104,7 +105,7 @@ sequenceDiagram
     actor User as 用户
     participant Control as GUI / 全局快捷键
     participant Runtime as Rust 状态机
-    participant Recorder as PortAudio
+    participant Recorder as WASAPI
     participant Converter as 内嵌 libav
     participant ASR as ASR HTTP API
     participant Clipboard as Windows 剪贴板
@@ -118,7 +119,7 @@ sequenceDiagram
     opt 暂停与恢复
         User->>Control: 暂停 / 恢复
         Control->>Runtime: toggle pause
-        Runtime->>Recorder: 停止或继续读取音频
+        Runtime->>Recorder: 停止采集，或清除缓冲后恢复采集
     end
 
     User->>Control: 停止
@@ -228,7 +229,7 @@ stateDiagram-v2
 
 - 当前 Release 只提供 Windows x86_64 构建。
 - GUI 是 Windows 专用原生程序；CLI 源码可在其他系统编译，但全局 Windows 快捷键功能只在 Windows 可用。
-- 录音使用系统默认输入设备，目前没有麦克风设备选择器。
+- 麦克风采集和设备枚举仅支持 Windows。GUI 和 CLI 均可指定录音输入设备或跟随系统默认，每次开始录音时重新解析设备。
 - 录音后一次性上传完整音频，不支持实时流式识别。
 - ASR 接口必须接受 `multipart/form-data` 并返回 JSON。
 - 只有 HTTP 200 被视为成功；其他状态码进入重试或失败流程。
@@ -244,7 +245,7 @@ stateDiagram-v2
 ### GUI
 
 - Windows 10 或 Windows 11 x86_64。
-- 可用的默认麦克风输入设备。
+- 可用的麦克风输入设备。
 - 一个兼容的 ASR HTTP 接口。
 - 无需安装 FFmpeg、PortAudio、WebView2 或 Visual C++ Redistributable。
 
@@ -260,7 +261,7 @@ stateDiagram-v2
 - Rust 1.97 或更新版本。
 - `x86_64-pc-windows-gnu` Rust 目标。
 - MinGW-w64、C/C++ 构建工具、`pkg-config`、Autoconf、Automake、Libtool、NASM、YASM 和 XZ 工具。
-- 构建静态音频依赖时需要能够获取 PortAudio、FFmpeg 和编解码器源码。
+- 构建静态音频依赖时需要能够获取 FFmpeg 和编解码器源码。
 
 ## GUI 使用
 
@@ -306,7 +307,7 @@ stateDiagram-v2
 |---|---|
 | Display | 界面语言、配置文件位置、浮窗透明度和浮窗缩放 |
 | API | 地址、Token、模型、语言、提示词、文本路径和额外字段 |
-| Audio | 声道、输出采样率、采样位深、比特率、编码器、容器、VAD 和边界填充 |
+| Audio | 麦克风（第一项）、输出声道数、输出采样率、输出位深、比特率、编码器、容器、VAD 和边界填充 |
 | Network | 超时、重试、HTTP/2 和 TLS 校验 |
 | Hotkeys | 三个快捷键、低级键盘钩子开关、两个剪贴板等待时间和使用 SendInput 开关 |
 | Cache | 缓存目录、缓存保留和请求失败占位文本 |
@@ -315,9 +316,13 @@ stateDiagram-v2
 
 只有 `Idle` 或 `Error` 状态允许保存设置。保存时程序会验证配置，重建 ASR 客户端和录音器，并重新注册快捷键。
 
+Audio 第一项为“麦克风”，采用与 Display language 一致的下拉样式。第一项选项为“跟随系统默认”。打开设置或展开下拉列表时，会在后台刷新当前可用的录音输入设备；设备较多或名称较长时可以滚动查看。选择后保存，从下一次录音生效；取消设置则放弃本次选择。已选设备离线时保留选择并标记“设备不可用”，开始录音时报告错误，不会悄悄换用其他麦克风。同名设备通过设备标识区分。
+
+Display language 和麦克风下拉列表共用带内边距的圆角面板，沿用深色与青绿色配色，选中项和悬停项通过不同底色区分。
+
 ### 退出
 
-- 按 `Esc` 时优先关闭设置窗口；设置窗口未打开时会进入退出流程。
+- 焦点在麦克风列表中时，按 `Esc` 先收起列表；否则优先关闭设置窗口，设置窗口未打开时进入退出流程。
 - 录音、暂停或上传期间退出会显示确认对话框。
 - 退出会取消录音和当前请求、移除托盘图标并停止快捷键线程。
 
@@ -339,6 +344,8 @@ stateDiagram-v2
 如果没有 `--config`、当前目录不存在 `config.json`，并且没有提供任何配置覆盖参数，CLI 会创建默认 `config.json`、打印路径并退出。编辑后重新运行即可。
 
 所有长参数都使用标准双横线形式。布尔参数必须显式传入 `true` 或 `false`。旧式单横线长参数和已删除的 `--notification` 不受支持。
+
+`--list-input-devices` 是独立查询入口：列出设备后退出，不读取或创建配置、不注册快捷键，也不访问 ASR 服务。命令行覆盖参数不会写回 JSON 文件。
 
 ### 快捷键模式
 
@@ -365,6 +372,50 @@ stateDiagram-v2
 ```
 
 启动后程序会在终端打印状态变化。按 `Ctrl+C` 退出。
+
+### 麦克风选择
+
+手写 CLI 配置时，建议先在 GUI 的 **Audio → 麦克风** 中选择具体设备并保存，然后打开设置窗口中显示的配置文件（默认是 `%APPDATA%\stt\config.json`），将 `INPUT_DEVICE` 和 `INPUT_DEVICE_NAME` 两个字段复制到自己的配置文件中。例如，将以下字段合并到自定义 JSON 配置：
+
+```json
+{
+  "INPUT_DEVICE": "{0.0.1.00000000}.{eaad28b1-baf2-4299-ae4e-4264defe0ab0}",
+  "INPUT_DEVICE_NAME": "麦克风 (Razer Seiren Mini)"
+}
+```
+
+上面的设备 ID 仅作示例，请使用自己电脑上保存的实际值。`INPUT_DEVICE` 用于定位设备，`INPUT_DEVICE_NAME` 只用于显示名称，不能仅填写名称来选择麦克风。
+
+将两个字段都保持为空字符串，即跟随系统默认麦克风：
+
+```json
+{
+  "INPUT_DEVICE": "",
+  "INPUT_DEVICE_NAME": ""
+}
+```
+
+GUI 选择“跟随系统默认”时，即使下拉框同时显示当前默认麦克风的名称，保存的这两个字段仍为空；如果需要固定使用某个麦克风，应选择该设备本身。自定义配置保存后，通过 `--config` 加载：
+
+```powershell
+.\stt.exe --config .\my-config.json
+```
+
+列出可用麦克风，并复制所需设备的稳定标识：
+
+```powershell
+.\stt.exe --list-input-devices
+.\stt.exe --config .\config.json --input-device "<设备列表中的完整 ID>"
+.\stt.exe --config .\config.json --input-device default
+```
+
+`default` 表示本次运行显式跟随系统默认，覆盖配置中保存的指定设备。不传 `--input-device` 时，使用所加载配置的 `INPUT_DEVICE`。要使用 GUI 保存的选择，可以直接加载 GUI 配置：
+
+```powershell
+.\stt.exe --config "$env:APPDATA\stt\config.json"
+```
+
+设备列表会标记当前系统默认设备。查询成功（包括没有可用设备）返回 `0`，枚举失败返回 `1`；开始录音时会再次检查设备是否可用。文件模式不会打开麦克风。
 
 ### 文件模式
 
@@ -406,8 +457,10 @@ stateDiagram-v2
 | 参数 | 用途 |
 |---|---|
 | `--codecs <CODEC>` | 覆盖音频编码器 |
+| `--list-input-devices` | 列出可用麦克风、稳定标识和系统默认设备，然后退出 |
+| `--input-device <ID>` | 指定本次运行的麦克风；传入 `default` 则跟随系统默认 |
 | `--container <FORMAT>` | 覆盖音频容器 |
-| `--channels <N>` | 覆盖声道数 |
+| `--channels <N>` | 覆盖最终上传音频的声道数 |
 | `--sampling-rate <HZ>` | 覆盖最终上传采样率；`--rate` 是兼容别名 |
 | `--sampling-rate-depth <BITS>` | 覆盖转换采样位深 |
 | `--bit-rate <KBPS>` | 覆盖音频比特率 |
@@ -474,6 +527,8 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
   "ExtraConfig": "{\"response_format\":\"json\",\"temperature\":0}",
   "OPACITY": 1.0,
   "WINDOW_SCALE": 1.0,
+  "INPUT_DEVICE": "",
+  "INPUT_DEVICE_NAME": "",
   "CHANNELS": 1,
   "SAMPLING_RATE": 16000,
   "ENABLE_VAD": false,
@@ -528,18 +583,26 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
 
 | 字段 | 默认值 | 验证与行为 |
 |---|---:|---|
-| `CHANNELS` | `1` | 允许 1–8；录音和转换都使用该值 |
+| `INPUT_DEVICE` | `""` | Windows 录音输入设备的稳定标识；为空或缺失时，每次开始录音均使用当时的系统默认设备 |
+| `INPUT_DEVICE_NAME` | `""` | 缓存的设备显示名称，供离线时展示；不参与设备识别 |
+| `CHANNELS` | `1` | 允许 1–8；只控制最终上传音频的声道数 |
 | `SAMPLING_RATE` | `16000` | 最终上传采样率，必须大于 0，单位 Hz |
-| `SAMPLING_RATE_DEPTH` | `16` | 允许 8、16、24、32；只影响转换，不改变录音 WAV 的 PCM 16-bit 格式 |
+| `SAMPLING_RATE_DEPTH` | `16` | 允许 8、16、24、32；输出位深偏好，受编码器支持范围约束，与采集格式无关 |
 | `BIT_RATE` | `32` | 必须大于 0，单位 kbps |
 | `CODECS` | `"opus"` | 编码器名称或兼容别名，大小写不敏感 |
 | `CONTAINER` | `"ogg"` | 输出容器/扩展名，大小写不敏感 |
 
 共享静态构建覆盖的常用输出包括 Opus/Ogg、MP3、AAC、FLAC、Vorbis 和 WAV/PCM。构建中还包含部分其他编码器与封装器；编码器和容器必须是有效组合。
 
+具体 PCM 编码器名称决定输出位深，例如 `pcm_s24le` 输出 24 位 PCM。现有 `pcm` 别名代表 `pcm_s16le`，仅修改位深字段不会改变这个别名的含义。
+
 ### 语音检测与捕获
 
-麦克风优先以 48 kHz PCM 16-bit 捕获，失败后依次尝试设备默认采样率、配置的输出采样率。WAV 头保存实际捕获采样率。`SAMPLING_RATE` 只控制最终上传采样率。
+core 通过 WASAPI 共享模式打开所选设备，优先使用 Windows 中配置的设备默认格式。默认格式无法查询或不受共享模式支持时，改用同一设备的音频引擎混音格式；无法打开所选设备时明确报错，不切换设备。音频引擎可能使用浮点样本，即使物理麦克风使用整数采样。
+
+采集采样率、声道数和精度独立于 `SAMPLING_RATE`、`CHANNELS` 和 `SAMPLING_RATE_DEPTH`。临时 WAV 保留实际采样率、声道布局和有效精度；整数样本中的整字节填充位可无损移除，例如“32 位存储、24 位有效精度”会保存为紧凑的 24 位 PCM。`RECORD_DEBUG` 会记录设备、实际采集格式和是否回退到音频引擎格式。输出配置在生成上传音频时应用。
+
+选择“跟随系统默认”后，Windows 默认设备的变化从下一次录音生效。指定设备的选择会一直保留，直到用户修改；设备断开时报错，重连后可再次尝试。正在进行的录音不会切换设备。暂停会停止采集，恢复时丢弃暂停前残留的缓冲样本。
 
 | 字段 | 默认值 | 行为 |
 |---|---:|---|
@@ -756,7 +819,6 @@ cargo check --workspace \
 ### 构建原生依赖与程序
 
 ```bash
-scripts/build-portaudio-windows-amd64.sh
 scripts/build-ffmpeg-windows-amd64.sh
 scripts/build-rust-windows-amd64.sh
 scripts/package-windows-release.sh
@@ -771,13 +833,13 @@ dist/stt-cli-windows-amd64.zip
 dist/stt-gui-windows-amd64.zip
 ```
 
-`scripts/build-portaudio-windows-amd64.sh` 构建 PortAudio WMME 后端，不启用 WASAPI。`scripts/build-ffmpeg-windows-amd64.sh` 使用 `--disable-everything` 后启用 file 协议；wav/mp3/flac/ogg/mov/aac/matroska/wv/ac3/eac3 解封装器；对应的 PCM、MP3/MP2、FLAC、Opus、Vorbis、AAC、ALAC、WavPack、AC3/EAC3 解码器与解析器；以及原有输出编码器和封装器。禁用 libavfilter。两个程序均启用共享的 `stt-core/static-libav` 功能，Earshot 固定为 1.2.2。
+采集直接使用 Windows 系统 WASAPI 接口，无需构建或链接 PortAudio。`scripts/build-ffmpeg-windows-amd64.sh` 使用 `--disable-everything` 后启用 file 协议；wav/mp3/flac/ogg/mov/aac/matroska/wv/ac3/eac3 解封装器；对应的 PCM、MP3/MP2、FLAC、Opus、Vorbis、AAC、ALAC、WavPack、AC3/EAC3 解码器与解析器；以及原有输出编码器和封装器。禁用 libavfilter。两个程序均启用共享的 `stt-core/static-libav` 功能，Earshot 固定为 1.2.2。
 
 GitHub Actions 还会检查：
 
 - 格式、测试和 `clippy -D warnings`。
 - Windows API 与 MinGW 目标编译。
-- PortAudio 后端必须包含 WMME 且不包含 WASAPI。
+- GUI 必须嵌入下拉控件子类化接口所需的 Common Controls v6 manifest。
 - FFmpeg 构建不得启用 `nonfree`。
 - CLI 和 GUI 均包含 `keybd_event` 和 `SendInput`，支持两种可选输入通道。
 - GUI 不得包含外部 FFmpeg 后端。
@@ -799,8 +861,8 @@ GitHub Actions 还会检查：
 
 ## 实现约束
 
-- 录音：PortAudio C 阻塞 API、默认输入设备、WMME；不使用 WASAPI。
-- 录音格式：交错 signed int16，临时 WAV 始终为 PCM 16-bit。
+- 录音：core 共用的 WASAPI 采集，通过稳定标识选择设备；跟随系统默认时，在每次开始录音时解析。
+- 录音格式：设备默认 PCM 或同一设备的音频引擎格式；临时 WAV 保留整数或浮点样本的有效精度。
 - GUI 转换：静态 libav C ABI；不启动 `ffmpeg.exe`。
 - CLI 转换：与 GUI 共用内嵌 libav 转换器及取消回调。
 - GUI：Win32 消息循环、Direct2D、DirectWrite 和原生控件；不嵌入 WebView。
@@ -811,6 +873,8 @@ GitHub Actions 还会检查：
 
 更精确的兼容行为见 [Rust 重写兼容合同](docs/rust-rewrite-contract.md)，自动与人工验证边界见 [Rust 技术验证记录](docs/rust-technical-validation.md)。
 
+本次采集更新的自动化格式/VAD 测试、用户反馈的 Windows 人工验证结果和硬件回归检查项，见[麦克风选择验证记录](docs/microphone-selection-validation.md)。
+
 ## 仓库布局
 
 | 组件 | 路径 | 作用 / 输出 |
@@ -819,7 +883,7 @@ GitHub Actions 还会检查：
 | CLI | `crates/stt-cli/` | `stt.exe` |
 | 原生 GUI | `crates/stt-gui/` | `STT.exe` |
 | libav 桥接 | `native/` | GUI 与 CLI 共用的 C ABI |
-| 构建脚本 | `scripts/` | PortAudio、FFmpeg、Rust 和发布包构建 |
+| 构建脚本 | `scripts/` | FFmpeg、Rust 和发布包构建；保留旧 PortAudio 脚本供参考 |
 | Windows 资源 | `assets/` | 程序图标等资源 |
 | 示例配置 | `examples/` | 服务商配置示例 |
 | 行为与验证文档 | `docs/` | Rust 兼容合同和技术验证记录 |
@@ -830,7 +894,6 @@ GitHub Actions 还会检查：
 两个发布包均静态链接：
 
 - FFmpeg/libav n7.1.1
-- PortAudio v19.7.0
 - Opus v1.5.2
 - LAME 3.100
 - libogg 1.3.5

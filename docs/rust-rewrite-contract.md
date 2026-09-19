@@ -32,7 +32,9 @@ defaults. Missing fields receive defaults and unknown fields are ignored.
 | `ExtraConfig` | `""` | Must be a JSON object when non-empty |
 | `OPACITY` | `1.0` | GUI floating-window opacity; `0.10`–`1.00` in `0.01` steps, where `1.0` is fully opaque |
 | `WINDOW_SCALE` | `1.0` | GUI floating-window scale; `0.3`–`2.0` in `0.1` steps, shared by full and minimal modes |
-| `CHANNELS` | `1` | Inclusive range 1–8 |
+| `INPUT_DEVICE` | `""` | Stable Windows capture endpoint ID; empty follows the system default |
+| `INPUT_DEVICE_NAME` | `""` | Display-only cached name, not used for device resolution |
+| `CHANNELS` | `1` | Inclusive range 1–8; output channels only |
 | `SAMPLING_RATE` | `16000` | Final upload rate, greater than zero |
 | `ENABLE_VAD` | `false` | Shared by GUI, CLI recording and CLI file mode |
 | `VAD_PADDING_MS` | `100` | Integer 0–1000 milliseconds; validated even while VAD is off |
@@ -130,21 +132,27 @@ message thread, `WM_QUIT`, and unregisters all bindings. Hook mode uses
 does not forbid extra modifiers. `CANCEL_OR_RETRY_KEY` cancels while recording
 or uploading; when idle with a buffered recording, it retries that recording.
 
-## PortAudio recorder
+## Shared WASAPI recorder
 
-- PortAudio C blocking API; no WASAPI implementation.
-- Initialize for each recording and terminate after it.
-- Default input device, configured channels, interleaved signed int16.
-- Try 48000 Hz, device default rate, then target output rate; deduplicate attempts.
-- Store the actual capture rate in the WAV header, including the retry buffer.
-- Each read contains 1024 frames per channel, with an interleaved buffer sized
-  to the channel count.
-- WAV is always PCM 16-bit. `SAMPLING_RATE_DEPTH` affects conversion only.
+- Core enumerates active capture endpoints and opens them by stable ID. Empty
+  `INPUT_DEVICE` resolves the current system default at each recording start.
+- GUI and CLI share the configuration and backend. `--list-input-devices` exits
+  before configuration lookup; `--input-device ID|default` overrides this run only.
+- A fixed unavailable endpoint fails without switching devices. Device names
+  and enumeration indices are never used as identifiers.
+- WASAPI shared mode prefers the endpoint's Windows-configured default format;
+  if unavailable or unsupported, use the same endpoint's engine mix format.
+- Capture sample rate, precision and channels are independent of output settings.
+  Temporary WAVs preserve effective precision and channel layout; integer
+  padding bytes may be packed out losslessly for decoder compatibility.
+- Reads return whole interleaved packets in the actual capture format. The COM
+  apartment and interfaces are owned by the recorder thread.
 - Start returns only after initialize, open, stream start, and WAV creation.
-- Pause does not call `Pa_ReadStream`; it polls state every ~100 ms.
+- Pause stops capture and polls state every ~100 ms; resume resets old buffered
+  packets before restarting the stream.
 - Ten consecutive read errors terminate recording, with ~10 ms between errors;
   a successful read resets the count.
-- A successful WAV write retains the existing ~10 ms delay.
+- Available packets are drained promptly; empty reads wait ~10 ms.
 - Stop finalizes the WAV; cancel/lifecycle cancellation removes it.
 - Shutdown cancellation is non-blocking.
 

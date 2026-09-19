@@ -29,6 +29,12 @@ pub struct Config {
     pub opacity: f64,
     #[serde(rename = "WINDOW_SCALE")]
     pub window_scale: f64,
+    /// Empty means follow the system default input endpoint at recording start.
+    #[serde(rename = "INPUT_DEVICE")]
+    pub input_device: String,
+    /// Display-only cache; never used to resolve an endpoint.
+    #[serde(rename = "INPUT_DEVICE_NAME")]
+    pub input_device_name: String,
     #[serde(rename = "CHANNELS")]
     pub channels: i32,
     #[serde(rename = "SAMPLING_RATE")]
@@ -97,6 +103,8 @@ impl Default for Config {
             extra_config: String::new(),
             opacity: 1.0,
             window_scale: 1.0,
+            input_device: String::new(),
+            input_device_name: String::new(),
             channels: 1,
             sampling_rate: 16_000,
             enable_vad: false,
@@ -316,6 +324,22 @@ pub fn container_extension(container: &str) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn microphone_config_is_backward_compatible_and_keeps_offline_selection() {
+        let old: super::Config = serde_json::from_str(r#"{"CHANNELS":2}"#).unwrap();
+        assert!(old.input_device.is_empty());
+        assert!(old.input_device_name.is_empty());
+        let config = super::Config {
+            input_device: "offline-endpoint-id".into(),
+            input_device_name: "USB microphone".into(),
+            ..old
+        };
+        config.validate().unwrap();
+        let dir = tempfile::tempdir().unwrap();
+        let path = dir.path().join("config.json");
+        config.save(&path).unwrap();
+        assert_eq!(super::Config::load(path).unwrap(), config);
+    }
     #[test]
     fn vad_defaults_roundtrip_and_bounds() {
         let old: super::Config = serde_json::from_str("{}").unwrap();

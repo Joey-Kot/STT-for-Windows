@@ -63,9 +63,7 @@ jobs:
           test -s NOTICE
           test -s THIRD_PARTY_NOTICES.txt
           grep -qi 'FFmpeg' THIRD_PARTY_NOTICES.txt
-          grep -qi 'PortAudio' THIRD_PARTY_NOTICES.txt
           test -s THIRD_PARTY_LICENSES/FFmpeg-GPL-3.0-or-later.txt
-          test -s THIRD_PARTY_LICENSES/PortAudio-MIT.txt
           test -s THIRD_PARTY_LICENSES/LAME-LGPL-2.0-only.txt
           test -s THIRD_PARTY_LICENSES/Opus-BSD-3-Clause.txt
 
@@ -73,19 +71,6 @@ jobs:
         run: |
           if grep -n -- '--enable-nonfree' scripts/build-ffmpeg-windows-amd64.sh; then
             echo "FFmpeg nonfree components must not be enabled." >&2
-            exit 1
-          fi
-
-      - name: Build PortAudio for MinGW
-        run: scripts/build-portaudio-windows-amd64.sh
-
-      - name: Verify PortAudio backend contract
-        run: |
-          portaudio_libs="$(pkg-config --static --libs build/portaudio-win/lib/pkgconfig/portaudio-2.0.pc)"
-          echo "$portaudio_libs"
-          echo "$portaudio_libs" | grep -i 'winmm'
-          if echo "$portaudio_libs" | grep -i 'wasapi'; then
-            echo "PortAudio must use WMME without WASAPI." >&2
             exit 1
           fi
 
@@ -100,6 +85,10 @@ jobs:
 
       - name: Verify binary contracts
         run: |
+          # Subclass helpers must resolve against Common Controls v6 at startup.
+          x86_64-w64-mingw32-objdump -p dist/gui/STT.exe | grep 'Entry: ID: 0x000018,'
+          strings dist/gui/STT.exe | grep -F 'name="Microsoft.Windows.Common-Controls"'
+          strings dist/gui/STT.exe | grep -F 'version="6.0.0.0"'
           if grep -R -n -E '\bbeeep\b|Toast' crates native; then
             echo "A forbidden input or notification implementation is present." >&2
             exit 1

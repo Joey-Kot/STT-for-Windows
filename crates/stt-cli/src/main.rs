@@ -48,6 +48,13 @@ struct Arguments {
     #[arg(long, value_name = "JSON", help_heading = "API")]
     extra_config: Option<String>,
 
+    /// List active microphones and their stable IDs, then exit without loading config.
+    #[arg(long, help_heading = "Audio")]
+    list_input_devices: bool,
+    /// Microphone endpoint ID, or "default" to follow the system default (this run only).
+    #[arg(long, value_name = "ID|default", help_heading = "Audio")]
+    input_device: Option<String>,
+
     /// Detect speech and trim original input (default false); no system FFmpeg required.
     #[arg(long, action = ArgAction::Set, value_name = "BOOL", help_heading = "Audio")]
     enable_vad: Option<bool>,
@@ -61,10 +68,10 @@ struct Arguments {
     /// Output audio container.
     #[arg(long, value_name = "FORMAT", help_heading = "Audio")]
     container: Option<String>,
-    /// Recording and conversion channel count.
+    /// Final upload channel count; capture follows the microphone format.
     #[arg(long, value_name = "N", help_heading = "Audio")]
     channels: Option<i32>,
-    /// Final upload sample rate in Hz; capture prefers 48000 Hz.
+    /// Final upload sample rate in Hz; capture follows the microphone format.
     #[arg(long, alias = "rate", value_name = "HZ", help_heading = "Audio")]
     sampling_rate: Option<i32>,
     /// Conversion sample depth in bits.
@@ -184,6 +191,7 @@ struct Arguments {
 impl Arguments {
     fn has_config_override(&self) -> bool {
         self.api_endpoint.is_some()
+            || self.input_device.is_some()
             || self.token.is_some()
             || self.model.is_some()
             || self.language.is_some()
@@ -221,6 +229,10 @@ impl Arguments {
     }
 
     fn apply(self, config: &mut Config) {
+        if let Some(id) = self.input_device {
+            config.input_device = if id == "default" { String::new() } else { id };
+            config.input_device_name.clear();
+        }
         set(&mut config.api_endpoint, self.api_endpoint);
         set(&mut config.token, self.token);
         set(&mut config.model, self.model);
@@ -283,6 +295,25 @@ async fn main() {
 
 async fn run() -> Result<(), Box<dyn std::error::Error>> {
     let arguments = Arguments::parse();
+    if arguments.list_input_devices {
+        let devices = stt_core::audio_devices::list_input_devices()?;
+        if devices.is_empty() {
+            println!("No active microphone inputs found.");
+        }
+        for device in devices {
+            println!(
+                "{}{}\n  {}",
+                device.name,
+                if device.is_default {
+                    " [system default]"
+                } else {
+                    ""
+                },
+                device.id
+            );
+        }
+        return Ok(());
+    }
     let explicit_config = arguments.config.clone();
     let file = arguments.file.clone();
     let output = arguments.output.clone();
@@ -356,6 +387,38 @@ async fn run() -> Result<(), Box<dyn std::error::Error>> {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn microphone_override_and_explicit_default_are_session_only() {
+        use clap::Parser;
+        for (args, expected) in [
+            (vec!["stt"], "saved-endpoint"),
+            (
+                vec!["stt", "--input-device", "another-endpoint"],
+                "another-endpoint",
+            ),
+            (vec!["stt", "--input-device", "default"], ""),
+        ] {
+            let mut config = stt_core::Config {
+                input_device: "saved-endpoint".into(),
+                input_device_name: "Saved mic".into(),
+                ..Default::default()
+            };
+            let original = config.clone();
+            let arguments = super::Arguments::try_parse_from(args).unwrap();
+            let overridden = arguments.input_device.is_some();
+            assert_eq!(arguments.has_config_override(), overridden);
+            arguments.apply(&mut config);
+            assert_eq!(config.input_device, expected);
+            assert_eq!(original.input_device, "saved-endpoint");
+            assert_eq!(
+                config.input_device_name,
+                if overridden { "" } else { "Saved mic" }
+            );
+        }
+        let listing = super::Arguments::try_parse_from(["stt", "--list-input-devices"]).unwrap();
+        assert!(listing.list_input_devices);
+        assert!(!listing.has_config_override());
+    }
     #[test]
     fn vad_override_and_range() {
         use clap::Parser;

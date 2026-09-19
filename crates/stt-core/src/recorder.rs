@@ -11,8 +11,9 @@ use tokio_util::sync::CancellationToken;
 use uuid::Uuid;
 
 use crate::Config;
+use crate::audio_devices::{CaptureFormat, SystemAudioBackend};
+use crate::capture_wav::CaptureWav;
 
-const BUFFER_SAMPLES: usize = 1024;
 const MAX_CONSECUTIVE_READ_ERRORS: usize = 10;
 const READ_ERROR_RETRY_DELAY: Duration = Duration::from_millis(10);
 const PAUSED_POLL_DELAY: Duration = Duration::from_millis(100);
@@ -41,7 +42,7 @@ pub enum RecorderError {
     NotRunning,
     #[error("recording canceled")]
     Canceled,
-    #[error("portaudio init failed: {0}")]
+    #[error("audio backend init failed: {0}")]
     Initialize(String),
     #[error("open stream failed: {0}")]
     OpenStream(String),
@@ -57,29 +58,31 @@ pub enum RecorderError {
     CloseWav(String),
     #[error("recorder worker stopped unexpectedly")]
     WorkerStopped,
-    #[error("PortAudio is only available in Windows builds")]
+    #[error("Microphone capture is only available on Windows")]
     UnsupportedPlatform,
 }
 
-pub trait AudioStream: Send {
+// Streams are created, used and dropped on the recorder thread (COM apartment).
+pub trait AudioStream {
+    fn format(&self) -> &CaptureFormat;
+    fn description(&self) -> String {
+        String::new()
+    }
     fn start(&mut self) -> Result<(), String>;
     fn stop(&mut self) -> Result<(), String>;
     fn close(&mut self) -> Result<(), String>;
-    fn read(&mut self, buffer: &mut [i16]) -> Result<(), String>;
+    /// Returns available whole frames; an empty packet means try later.
+    fn read(&mut self, buffer: &mut Vec<u8>) -> Result<(), String>;
 }
 
 pub trait AudioBackend: Send + Sync + 'static {
-    fn default_sample_rate(&self) -> Option<u32> {
-        None
+    fn initialize(&self) -> Result<(), String> {
+        Ok(())
     }
-    fn initialize(&self) -> Result<(), String>;
-    fn terminate(&self) -> Result<(), String>;
-    fn open_default_stream(
-        &self,
-        input_channels: i32,
-        sample_rate: f64,
-        frames_per_buffer: usize,
-    ) -> Result<Box<dyn AudioStream>, String>;
+    fn terminate(&self) -> Result<(), String> {
+        Ok(())
+    }
+    fn open_stream(&self, device_id: &str) -> Result<Box<dyn AudioStream>, String>;
 }
 
 struct ActiveRecording {
@@ -112,7 +115,7 @@ impl std::fmt::Debug for Recorder {
 
 impl Recorder {
     pub fn new(config: Config, temp_dir: PathBuf) -> Self {
-        Self::with_backend(config, temp_dir, Arc::new(PortAudioBackend))
+        Self::with_backend(config, temp_dir, Arc::new(SystemAudioBackend))
     }
 
     pub fn with_backend(config: Config, temp_dir: PathBuf, backend: Arc<dyn AudioBackend>) -> Self {
@@ -162,7 +165,7 @@ impl Recorder {
         let backend = self.backend.clone();
         let inner = self.inner.clone();
         if let Err(error) = thread::Builder::new()
-            .name("stt-portaudio-recorder".into())
+            .name("stt-audio-recorder".into())
             .spawn(move || {
                 record_loop(
                     config,
@@ -270,34 +273,7 @@ fn record_loop(
             return;
         }
     };
-    let mut capture_rate = 48_000;
-    let mut opened = Err("no supported capture rate".to_string());
-    let mut attempted = Vec::new();
-    for rate in [
-        Some(48_000),
-        backend.default_sample_rate(),
-        u32::try_from(config.sampling_rate).ok(),
-    ]
-    .into_iter()
-    .flatten()
-    {
-        if rate == 0 || attempted.contains(&rate) {
-            continue;
-        }
-        attempted.push(rate);
-        opened = backend.open_default_stream(config.channels, f64::from(rate), BUFFER_SAMPLES);
-        if opened.is_ok() {
-            capture_rate = rate;
-            break;
-        }
-    }
-    if config.record_debug {
-        eprintln!(
-            "[record] capture_rate={capture_rate} fallback={} attempted={attempted:?}",
-            capture_rate != 48_000
-        );
-    }
-    let mut stream = match opened {
+    let mut stream = match backend.open_stream(&config.input_device) {
         Ok(stream) => stream,
         Err(error) => {
             finish_start_failure(
@@ -313,6 +289,7 @@ fn record_loop(
     };
     if let Err(error) = stream.start() {
         let _ = stream.close();
+        drop(stream);
         finish_start_failure(
             &inner,
             started,
@@ -323,17 +300,17 @@ fn record_loop(
         );
         return;
     }
-    let specification = hound::WavSpec {
-        channels: config.channels as u16,
-        sample_rate: capture_rate,
-        bits_per_sample: 16,
-        sample_format: hound::SampleFormat::Int,
-    };
-    let mut writer = match hound::WavWriter::create(&wav_path, specification) {
+    let format = stream.format().clone();
+    if config.record_debug {
+        eprintln!("[record] device={} format={format:?}", stream.description());
+    }
+    let mut writer = match CaptureWav::create(&wav_path, &format) {
         Ok(writer) => writer,
         Err(error) => {
             let _ = stream.stop();
             let _ = stream.close();
+            drop(stream);
+            let _ = fs::remove_file(&wav_path);
             finish_start_failure(
                 &inner,
                 started,
@@ -347,7 +324,8 @@ fn record_loop(
     };
 
     let _ = started.send(Ok(()));
-    let mut samples = vec![0_i16; BUFFER_SAMPLES * config.channels as usize];
+    let mut samples = Vec::new();
+    let mut stream_paused = false;
     let mut consecutive_errors = 0;
     let result = 'recording: loop {
         let state = inner.lock().state;
@@ -372,21 +350,34 @@ fn record_loop(
                 })
             };
         }
-        if state == RecorderState::Paused {
+        if state == RecorderState::Paused && stream_paused {
             thread::sleep(PAUSED_POLL_DELAY);
             continue;
         }
-        match stream.read(&mut samples) {
+        let reading = if state == RecorderState::Paused {
+            stream.stop().map(|()| {
+                stream_paused = true;
+                samples.clear();
+            })
+        } else if stream_paused {
+            stream.start().map(|()| {
+                stream_paused = false;
+                samples.clear();
+            })
+        } else {
+            stream.read(&mut samples)
+        };
+        match reading {
             Ok(()) => {
                 consecutive_errors = 0;
-                for &sample in &samples {
-                    if let Err(error) = writer.write_sample(sample) {
-                        drop(writer);
-                        let _ = fs::remove_file(&wav_path);
-                        break 'recording Err(RecorderError::WriteWav(error.to_string()));
-                    }
+                if let Err(error) = writer.write(&samples) {
+                    drop(writer);
+                    let _ = fs::remove_file(&wav_path);
+                    break 'recording Err(RecorderError::WriteWav(error.to_string()));
                 }
-                thread::sleep(SUCCESSFUL_WRITE_DELAY);
+                if samples.is_empty() {
+                    thread::sleep(SUCCESSFUL_WRITE_DELAY);
+                }
             }
             Err(error) => {
                 consecutive_errors += 1;
@@ -410,6 +401,7 @@ fn record_loop(
 
     let _ = stream.stop();
     let _ = stream.close();
+    drop(stream);
     let _ = backend.terminate();
 
     let previous_state = {
@@ -455,168 +447,6 @@ fn generate_temp_wav(directory: &Path) -> PathBuf {
     directory.join(format!("RecordTemp_{}.wav", &id[..16]))
 }
 
-struct PortAudioBackend;
-
-#[cfg(windows)]
-mod portaudio {
-    use std::ffi::{c_char, c_void};
-
-    use super::{AudioBackend, AudioStream, PortAudioBackend};
-
-    const PA_NO_ERROR: i32 = 0;
-    const PA_INT16: u32 = 0x00000008;
-
-    #[repr(C)]
-    struct PaStream(c_void);
-
-    #[repr(C)]
-    struct PaDeviceInfo {
-        struct_version: i32,
-        name: *const c_char,
-        host_api: i32,
-        max_input_channels: i32,
-        max_output_channels: i32,
-        default_low_input_latency: f64,
-        default_low_output_latency: f64,
-        default_high_input_latency: f64,
-        default_high_output_latency: f64,
-        default_sample_rate: f64,
-    }
-
-    #[link(name = "portaudio")]
-    unsafe extern "C" {
-        fn Pa_GetDefaultInputDevice() -> i32;
-        fn Pa_GetDeviceInfo(device: i32) -> *const PaDeviceInfo;
-        fn Pa_Initialize() -> i32;
-        fn Pa_Terminate() -> i32;
-        fn Pa_GetErrorText(error: i32) -> *const c_char;
-        fn Pa_OpenDefaultStream(
-            stream: *mut *mut PaStream,
-            input_channels: i32,
-            output_channels: i32,
-            sample_format: u32,
-            sample_rate: f64,
-            frames_per_buffer: u32,
-            callback: *const c_void,
-            user_data: *mut c_void,
-        ) -> i32;
-        fn Pa_StartStream(stream: *mut PaStream) -> i32;
-        fn Pa_StopStream(stream: *mut PaStream) -> i32;
-        fn Pa_CloseStream(stream: *mut PaStream) -> i32;
-        fn Pa_ReadStream(stream: *mut PaStream, buffer: *mut c_void, frames: u32) -> i32;
-    }
-
-    fn check(error: i32) -> Result<(), String> {
-        if error == PA_NO_ERROR {
-            return Ok(());
-        }
-        let text = unsafe { Pa_GetErrorText(error) };
-        if text.is_null() {
-            return Err(format!("PortAudio error {error}"));
-        }
-        Err(unsafe { std::ffi::CStr::from_ptr(text) }
-            .to_string_lossy()
-            .into_owned())
-    }
-
-    impl AudioBackend for PortAudioBackend {
-        fn default_sample_rate(&self) -> Option<u32> {
-            let device = unsafe { Pa_GetDefaultInputDevice() };
-            if device < 0 {
-                return None;
-            }
-            let info = unsafe { Pa_GetDeviceInfo(device).as_ref() }?;
-            let rate = info.default_sample_rate;
-            (rate.is_finite() && rate > 0.0 && rate <= f64::from(u32::MAX))
-                .then_some(rate.round() as u32)
-        }
-
-        fn initialize(&self) -> Result<(), String> {
-            check(unsafe { Pa_Initialize() })
-        }
-
-        fn terminate(&self) -> Result<(), String> {
-            check(unsafe { Pa_Terminate() })
-        }
-
-        fn open_default_stream(
-            &self,
-            input_channels: i32,
-            sample_rate: f64,
-            frames_per_buffer: usize,
-        ) -> Result<Box<dyn AudioStream>, String> {
-            let mut stream = std::ptr::null_mut();
-            check(unsafe {
-                Pa_OpenDefaultStream(
-                    &mut stream,
-                    input_channels,
-                    0,
-                    PA_INT16,
-                    sample_rate,
-                    frames_per_buffer as u32,
-                    std::ptr::null(),
-                    std::ptr::null_mut(),
-                )
-            })?;
-            Ok(Box::new(Stream {
-                pointer: stream,
-                channels: input_channels.max(1) as usize,
-            }))
-        }
-    }
-
-    struct Stream {
-        pointer: *mut PaStream,
-        channels: usize,
-    }
-
-    unsafe impl Send for Stream {}
-
-    impl AudioStream for Stream {
-        fn start(&mut self) -> Result<(), String> {
-            check(unsafe { Pa_StartStream(self.pointer) })
-        }
-
-        fn stop(&mut self) -> Result<(), String> {
-            check(unsafe { Pa_StopStream(self.pointer) })
-        }
-
-        fn close(&mut self) -> Result<(), String> {
-            let result = check(unsafe { Pa_CloseStream(self.pointer) });
-            self.pointer = std::ptr::null_mut();
-            result
-        }
-
-        fn read(&mut self, buffer: &mut [i16]) -> Result<(), String> {
-            if buffer.len() % self.channels != 0 {
-                return Err("input buffer length is not divisible by channel count".into());
-            }
-            let frames = buffer.len() / self.channels;
-            check(unsafe { Pa_ReadStream(self.pointer, buffer.as_mut_ptr().cast(), frames as u32) })
-        }
-    }
-}
-
-#[cfg(not(windows))]
-impl AudioBackend for PortAudioBackend {
-    fn initialize(&self) -> Result<(), String> {
-        Err(RecorderError::UnsupportedPlatform.to_string())
-    }
-
-    fn terminate(&self) -> Result<(), String> {
-        Ok(())
-    }
-
-    fn open_default_stream(
-        &self,
-        _input_channels: i32,
-        _sample_rate: f64,
-        _frames_per_buffer: usize,
-    ) -> Result<Box<dyn AudioStream>, String> {
-        Err(RecorderError::UnsupportedPlatform.to_string())
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use std::collections::VecDeque;
@@ -626,8 +456,8 @@ mod tests {
 
     #[derive(Default)]
     struct FakeBackend {
-        supported_rate: Option<u32>,
-        attempted_rates: Mutex<Vec<u32>>,
+        selected_devices: Mutex<Vec<String>>,
+        open_error: Mutex<Option<String>>,
         initialize_error: Mutex<Option<String>>,
         reads: Arc<Mutex<VecDeque<Result<(), String>>>>,
         read_calls: Arc<AtomicUsize>,
@@ -635,9 +465,6 @@ mod tests {
     }
 
     impl AudioBackend for FakeBackend {
-        fn default_sample_rate(&self) -> Option<u32> {
-            Some(44100)
-        }
         fn initialize(&self) -> Result<(), String> {
             self.initialize_error.lock().clone().map_or(Ok(()), Err)
         }
@@ -647,20 +474,13 @@ mod tests {
             Ok(())
         }
 
-        fn open_default_stream(
-            &self,
-            _input_channels: i32,
-            sample_rate: f64,
-            _frames_per_buffer: usize,
-        ) -> Result<Box<dyn AudioStream>, String> {
-            self.attempted_rates.lock().push(sample_rate as u32);
-            if self
-                .supported_rate
-                .is_some_and(|rate| f64::from(rate) != sample_rate)
-            {
-                return Err("unsupported sample rate".into());
+        fn open_stream(&self, device_id: &str) -> Result<Box<dyn AudioStream>, String> {
+            self.selected_devices.lock().push(device_id.into());
+            if let Some(error) = self.open_error.lock().clone() {
+                return Err(error);
             }
             Ok(Box::new(FakeStream {
+                format: test_format(),
                 reads: self.reads.clone(),
                 read_calls: self.read_calls.clone(),
             }))
@@ -668,36 +488,77 @@ mod tests {
     }
 
     struct FakeStream {
+        format: CaptureFormat,
         reads: Arc<Mutex<VecDeque<Result<(), String>>>>,
         read_calls: Arc<AtomicUsize>,
     }
 
+    fn test_format() -> CaptureFormat {
+        // 44.1 kHz stereo 24-bit capture, independent of the output config.
+        let mut bytes = Vec::new();
+        bytes.extend_from_slice(&1_u16.to_le_bytes());
+        bytes.extend_from_slice(&2_u16.to_le_bytes());
+        bytes.extend_from_slice(&44100_u32.to_le_bytes());
+        bytes.extend_from_slice(&(44100_u32 * 6).to_le_bytes());
+        bytes.extend_from_slice(&6_u16.to_le_bytes());
+        bytes.extend_from_slice(&24_u16.to_le_bytes());
+        bytes.extend_from_slice(&0_u16.to_le_bytes());
+        CaptureFormat::from_wave_format(&bytes).unwrap()
+    }
+
     #[tokio::test]
-    async fn capture_preference_and_device_fallback_preserve_wav_rate() {
-        for (supported, expected) in [
-            (None, vec![48000]),
-            (Some(44100), vec![48000, 44100]),
-            (Some(16000), vec![48000, 44100, 16000]),
-        ] {
-            let backend = Arc::new(FakeBackend {
-                supported_rate: supported,
-                ..Default::default()
-            });
-            let dir = tempfile::tempdir().unwrap();
-            let recorder = Recorder::with_backend(
-                Config::default(),
-                dir.path().to_path_buf(),
-                backend.clone(),
-            );
-            recorder.start(CancellationToken::new()).await.unwrap();
-            let result = recorder.stop().await.unwrap();
-            assert_eq!(*backend.attempted_rates.lock(), expected);
-            let wav = hound::WavReader::open(result.wav_path.unwrap()).unwrap();
-            assert_eq!(wav.spec().sample_rate, *expected.last().unwrap());
-        }
+    async fn selected_device_and_native_format_ignore_output_settings() {
+        let backend = Arc::new(FakeBackend::default());
+        let dir = tempfile::tempdir().unwrap();
+        let config = Config {
+            input_device: "stable-endpoint-id".into(),
+            sampling_rate: 16000,
+            channels: 1,
+            sampling_rate_depth: 16,
+            ..Config::default()
+        };
+        let recorder = Recorder::with_backend(config, dir.path().to_path_buf(), backend.clone());
+        recorder.start(CancellationToken::new()).await.unwrap();
+        tokio::time::sleep(Duration::from_millis(30)).await;
+        let result = recorder.stop().await.unwrap();
+        assert_eq!(*backend.selected_devices.lock(), ["stable-endpoint-id"]);
+        let wav = hound::WavReader::open(result.wav_path.unwrap()).unwrap();
+        assert_eq!(wav.spec().sample_rate, 44100);
+        assert_eq!(wav.spec().channels, 2);
+        assert_eq!(wav.spec().bits_per_sample, 24);
+        assert!(wav.duration() > 0);
+    }
+
+    #[tokio::test]
+    async fn unavailable_device_does_not_fall_back_and_can_reconnect() {
+        let backend = Arc::new(FakeBackend::default());
+        *backend.open_error.lock() = Some("Selected microphone unavailable".into());
+        let dir = tempfile::tempdir().unwrap();
+        let recorder = Recorder::with_backend(
+            Config {
+                input_device: "missing".into(),
+                ..Config::default()
+            },
+            dir.path().to_path_buf(),
+            backend.clone(),
+        );
+        assert!(matches!(
+            recorder.start(CancellationToken::new()).await,
+            Err(RecorderError::OpenStream(_))
+        ));
+        assert_eq!(recorder.state(), RecorderState::Idle);
+        assert_eq!(*backend.selected_devices.lock(), ["missing"]);
+        assert!(fs::read_dir(dir.path()).unwrap().next().is_none());
+        *backend.open_error.lock() = None;
+        recorder.start(CancellationToken::new()).await.unwrap();
+        recorder.cancel().await.unwrap();
+        assert_eq!(*backend.selected_devices.lock(), ["missing", "missing"]);
     }
 
     impl AudioStream for FakeStream {
+        fn format(&self) -> &CaptureFormat {
+            &self.format
+        }
         fn start(&mut self) -> Result<(), String> {
             Ok(())
         }
@@ -707,9 +568,11 @@ mod tests {
         fn close(&mut self) -> Result<(), String> {
             Ok(())
         }
-        fn read(&mut self, buffer: &mut [i16]) -> Result<(), String> {
+        fn read(&mut self, buffer: &mut Vec<u8>) -> Result<(), String> {
             self.read_calls.fetch_add(1, Ordering::SeqCst);
-            buffer.fill(1);
+            thread::sleep(Duration::from_millis(5));
+            buffer.clear();
+            buffer.resize(600, 1);
             self.reads.lock().pop_front().unwrap_or(Ok(()))
         }
     }

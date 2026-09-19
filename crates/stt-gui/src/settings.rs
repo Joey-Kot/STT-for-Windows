@@ -50,6 +50,18 @@ use crate::platform;
 use crate::render::{PANEL_CORNER_RADIUS, RoundedOutlineRenderer, continuous_rounded_rect_polygon};
 use crate::resources;
 
+mod dropdown;
+mod microphone;
+use microphone::{
+    ID_MICROPHONE, ID_MICROPHONE_LIST, MICROPHONE_TIMER, MicrophonePicker, WM_MICROPHONE_ACTION,
+};
+
+pub fn microphone_handles_escape(hwnd: HWND) -> bool {
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::GetDlgCtrlID(hwnd) == ID_MICROPHONE_LIST as i32
+    }
+}
+
 const ID_SAVE: usize = 0x6101;
 const ID_CANCEL: usize = 0x6102;
 const ID_LANGUAGE: usize = 0x6103;
@@ -164,7 +176,7 @@ const FIELDS: &[FieldSpec] = &[
     },
     FieldSpec {
         key: "CHANNELS",
-        label: "Channels",
+        label: "Output channels",
         group: "Audio",
         kind: FieldKind::Integer,
     },
@@ -176,7 +188,7 @@ const FIELDS: &[FieldSpec] = &[
     },
     FieldSpec {
         key: "SAMPLING_RATE_DEPTH",
-        label: "Sample depth",
+        label: "Output sample depth",
         group: "Audio",
         kind: FieldKind::Integer,
     },
@@ -337,7 +349,9 @@ struct SettingsState {
     language: Language,
     language_control: HWND,
     language_items: Vec<HWND>,
+    language_panel: HWND,
     language_open: bool,
+    microphone: Option<MicrophonePicker>,
     boolean_values: HashMap<&'static str, bool>,
     boolean_ids: HashMap<usize, &'static str>,
     input_frames: Vec<InputFrame>,
@@ -451,7 +465,9 @@ impl SettingsWindow {
             language,
             language_control: HWND::default(),
             language_items: Vec::new(),
+            language_panel: HWND::default(),
             language_open: false,
+            microphone: None,
             boolean_values: HashMap::new(),
             boolean_ids: HashMap::new(),
             input_frames: Vec::new(),
@@ -562,6 +578,9 @@ unsafe extern "system" fn settings_proc(
             if id >= ID_PAGE_BASE && id < ID_PAGE_BASE + GROUPS.len() && notification == BN_CLICKED
             {
                 set_language_dropdown(state, false);
+                if let Some(picker) = &mut state.microphone {
+                    picker.set_open(false, state.language, state.dpi);
+                }
                 state.active_group = id - ID_PAGE_BASE;
                 update_page_visibility(state);
                 for button in &state.page_buttons {
@@ -574,6 +593,10 @@ unsafe extern "system" fn settings_proc(
                 }
             } else if id == ID_LANGUAGE && notification == BN_CLICKED {
                 set_language_dropdown(state, !state.language_open);
+            } else if id == ID_MICROPHONE && notification == BN_CLICKED && !state.saving {
+                if let Some(picker) = &mut state.microphone {
+                    picker.set_open(!picker.open, state.language, state.dpi);
+                }
             } else if id >= ID_LANGUAGE_ITEM_BASE
                 && id < ID_LANGUAGE_ITEM_BASE + Language::ALL.len()
                 && notification == BN_CLICKED
@@ -610,6 +633,9 @@ unsafe extern "system" fn settings_proc(
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
+            if let Some(picker) = &mut state.microphone {
+                picker.set_open(false, state.language, state.dpi);
+            }
             if state.language_open {
                 set_language_dropdown(state, false);
             }
@@ -622,8 +648,71 @@ unsafe extern "system" fn settings_proc(
         WM_ERASEBKGND => LRESULT(1),
         WM_DRAWITEM => {
             let item = unsafe { &*(lparam.0 as *const DRAWITEMSTRUCT) };
-            draw_owner_button(state, item);
+            if item.CtlID as usize == ID_MICROPHONE_LIST {
+                if let Some(picker) = &state.microphone {
+                    picker.draw(state, item);
+                }
+            } else {
+                draw_owner_button(state, item);
+            }
             LRESULT(1)
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_MEASUREITEM => {
+            let item =
+                unsafe { &mut *(lparam.0 as *mut windows::Win32::UI::Controls::MEASUREITEMSTRUCT) };
+            if item.CtlID as usize == ID_MICROPHONE_LIST {
+                item.itemHeight = platform::scale(36, state.dpi) as u32;
+                LRESULT(1)
+            } else {
+                unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+            }
+        }
+        windows::Win32::UI::WindowsAndMessaging::WM_TIMER if wparam.0 == MICROPHONE_TIMER => {
+            if let Some(picker) = &mut state.microphone {
+                picker.poll(state.language, state.dpi);
+            }
+            LRESULT(0)
+        }
+        WM_MICROPHONE_ACTION => {
+            if let Some(picker) = &mut state.microphone {
+                match wparam.0 {
+                    1 if picker.open && !state.saving => picker.select(state.language, state.dpi),
+                    2 => {
+                        picker.set_open(false, state.language, state.dpi);
+                        unsafe {
+                            let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(Some(
+                                picker.button,
+                            ));
+                        }
+                    }
+                    3 if lparam.0 != picker.button.0 as isize
+                        && lparam.0 != picker.list.0 as isize =>
+                    {
+                        picker.set_open(false, state.language, state.dpi)
+                    }
+                    4 if !state.saving && state.active_group == 2 => {
+                        picker.set_open(true, state.language, state.dpi)
+                    }
+                    5 => {
+                        picker.set_open(false, state.language, state.dpi);
+                        unsafe {
+                            if let Ok(next) =
+                                windows::Win32::UI::WindowsAndMessaging::GetNextDlgTabItem(
+                                    hwnd,
+                                    Some(picker.button),
+                                    lparam.0 != 0,
+                                )
+                            {
+                                let _ = windows::Win32::UI::Input::KeyboardAndMouse::SetFocus(
+                                    Some(next),
+                                );
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+            LRESULT(0)
         }
         WM_CTLCOLORSTATIC | WM_CTLCOLORBTN => {
             let hdc = HDC(wparam.0 as *mut c_void);
@@ -674,6 +763,10 @@ unsafe extern "system" fn settings_proc(
                     SWP_NOACTIVATE,
                 );
             }
+            if let Some(picker) = &mut state.microphone {
+                picker.rebuild(state.language, state.dpi);
+            }
+            set_language_dropdown(state, state.language_open);
             LRESULT(0)
         }
         WM_WINDOWPOSCHANGED => {
@@ -747,6 +840,10 @@ unsafe extern "system" fn settings_proc(
         }
         WM_DESTROY => {
             unsafe {
+                let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(
+                    Some(hwnd),
+                    MICROPHONE_TIMER,
+                );
                 let _ = DeleteObject(HGDIOBJ(state.background_brush.0));
                 let _ = DeleteObject(HGDIOBJ(state.input_brush.0));
                 let _ = DeleteObject(HGDIOBJ(state.font.0));
@@ -896,6 +993,27 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
 
     let mut group_y: HashMap<&'static str, i32> = HashMap::new();
     group_y.insert("Display", 138);
+    let microphone_label = create_label(
+        state,
+        state.language.text("INPUT_DEVICE"),
+        CONTENT_LEFT,
+        FIELD_TOP,
+        LABEL_WIDTH,
+        FIELD_HEIGHT,
+        instance,
+    )?;
+    state
+        .control_groups
+        .insert(microphone_label.0 as usize, "Audio");
+    state
+        .localized_controls
+        .push((microphone_label, "INPUT_DEVICE"));
+    let picker = MicrophonePicker::create(state, instance)?;
+    state
+        .control_groups
+        .insert(picker.button.0 as usize, "Audio");
+    state.microphone = Some(picker);
+    group_y.insert("Audio", FIELD_TOP + 42);
     for (index, field) in FIELDS.iter().enumerate() {
         let y = *group_y.entry(field.group).or_insert(FIELD_TOP);
         let label = create_label(
@@ -1059,6 +1177,7 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
     state.localized_controls.push((cancel, "cancel"));
     state.localized_controls.push((save, "save"));
 
+    state.language_panel = dropdown::create_panel(state, instance)?;
     for (index, language) in Language::ALL.iter().enumerate() {
         let item = create_child(
             state,
@@ -1073,8 +1192,11 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
             instance,
         )?;
         unsafe {
+            windows::Win32::UI::WindowsAndMessaging::SetParent(item, Some(state.language_panel))
+                .map_err(|error| error.to_string())?;
             let _ = ShowWindow(item, SW_HIDE);
         }
+        dropdown::track_hover(item, false)?;
         state.language_items.push(item);
     }
 
@@ -1349,7 +1471,12 @@ fn draw_owner_button(state: &SettingsState, item: &DRAWITEMSTRUCT) {
             return;
         }
 
-        if id == ID_LANGUAGE {
+        if id == ID_LANGUAGE || id == ID_MICROPHONE {
+            let open = if id == ID_LANGUAGE {
+                state.language_open
+            } else {
+                state.microphone.as_ref().is_some_and(|p| p.open)
+            };
             rounded_box(
                 item.hDC,
                 item.rcItem,
@@ -1358,7 +1485,7 @@ fn draw_owner_button(state: &SettingsState, item: &DRAWITEMSTRUCT) {
                 } else {
                     rgb(26, 35, 39)
                 },
-                if state.language_open || focused || hot {
+                if open || focused || hot {
                     rgb(82, 171, 158)
                 } else {
                     rgb(54, 68, 74)
@@ -1375,7 +1502,7 @@ fn draw_owner_button(state: &SettingsState, item: &DRAWITEMSTRUCT) {
             );
             let cx = item.rcItem.right - scale(17);
             let cy = (item.rcItem.top + item.rcItem.bottom) / 2;
-            let direction = if state.language_open { -1 } else { 1 };
+            let direction = if open { -1 } else { 1 };
             stroke_polyline(
                 item.hDC,
                 &[
@@ -1401,22 +1528,12 @@ fn draw_owner_button(state: &SettingsState, item: &DRAWITEMSTRUCT) {
         if id >= ID_LANGUAGE_ITEM_BASE && id < ID_LANGUAGE_ITEM_BASE + Language::ALL.len() {
             let index = id - ID_LANGUAGE_ITEM_BASE;
             let selected = Language::ALL.get(index).copied() == Some(state.language);
-            rounded_box(
+            dropdown::draw_row(
                 item.hDC,
                 item.rcItem,
-                if pressed || hot {
-                    rgb(37, 57, 59)
-                } else if selected {
-                    rgb(29, 51, 52)
-                } else {
-                    rgb(23, 31, 35)
-                },
-                if selected {
-                    rgb(70, 142, 132)
-                } else {
-                    rgb(47, 61, 66)
-                },
-                scale(6),
+                selected,
+                pressed || hot || focused || dropdown::hovered(item.hwndItem),
+                state.dpi,
             );
             draw_button_text(
                 state,
@@ -1428,31 +1545,8 @@ fn draw_owner_button(state: &SettingsState, item: &DRAWITEMSTRUCT) {
                 },
                 DT_LEFT,
                 scale(14),
-                scale(42),
+                scale(14),
             );
-            if selected {
-                let cx = item.rcItem.right - scale(18);
-                let cy = (item.rcItem.top + item.rcItem.bottom) / 2;
-                stroke_polyline(
-                    item.hDC,
-                    &[
-                        POINT {
-                            x: cx - scale(5),
-                            y: cy,
-                        },
-                        POINT {
-                            x: cx - scale(1),
-                            y: cy + scale(4),
-                        },
-                        POINT {
-                            x: cx + scale(6),
-                            y: cy - scale(5),
-                        },
-                    ],
-                    rgb(112, 215, 195),
-                    scale(2).max(1),
-                );
-            }
             return;
         }
 
@@ -1895,6 +1989,9 @@ fn update_page_visibility(state: &SettingsState) {
         }
     }
     if active != "Display" || !state.language_open {
+        unsafe {
+            let _ = ShowWindow(state.language_panel, SW_HIDE);
+        }
         for item in &state.language_items {
             unsafe {
                 let _ = ShowWindow(*item, SW_HIDE);
@@ -1905,7 +2002,23 @@ fn update_page_visibility(state: &SettingsState) {
 
 fn set_language_dropdown(state: &mut SettingsState, open: bool) {
     state.language_open = open && state.active_group == 0;
-    for item in &state.language_items {
+    let width = dropdown::position(
+        state.language_panel,
+        state.language_control,
+        Language::ALL.len() as i32 * dropdown::ROW_HEIGHT,
+        state.dpi,
+    );
+    unsafe {
+        let _ = ShowWindow(
+            state.language_panel,
+            if state.language_open {
+                SW_SHOW
+            } else {
+                SW_HIDE
+            },
+        );
+    }
+    for (index, item) in state.language_items.iter().enumerate() {
         unsafe {
             let _ = ShowWindow(
                 *item,
@@ -1919,11 +2032,14 @@ fn set_language_dropdown(state: &mut SettingsState, open: bool) {
                 let _ = SetWindowPos(
                     *item,
                     Some(HWND_TOP),
-                    0,
-                    0,
-                    0,
-                    0,
-                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                    platform::scale(dropdown::PADDING, state.dpi),
+                    platform::scale(
+                        dropdown::PADDING + index as i32 * dropdown::ROW_HEIGHT,
+                        state.dpi,
+                    ),
+                    width,
+                    platform::scale(dropdown::ROW_HEIGHT, state.dpi),
+                    SWP_NOACTIVATE,
                 );
                 let _ = InvalidateRect(Some(*item), None, true);
             }
@@ -1942,6 +2058,9 @@ fn select_language(state: &mut SettingsState, index: usize) {
     language.save();
     set_language_dropdown(state, false);
     refresh_language(state);
+    if let Some(picker) = &mut state.microphone {
+        picker.rebuild(state.language, state.dpi);
+    }
     for item in &state.language_items {
         unsafe {
             let _ = InvalidateRect(Some(*item), None, true);
@@ -2109,6 +2228,9 @@ fn save(state: &mut SettingsState) {
         return;
     }
     state.saving = true;
+    if let Some(picker) = &mut state.microphone {
+        picker.set_open(false, state.language, state.dpi);
+    }
     enable_controls(state, false);
     let runtime = state.runtime.clone();
     let config_path = state.config_path.clone();
@@ -2152,6 +2274,16 @@ fn read_config(state: &SettingsState) -> Result<Config, String> {
     let object = value
         .as_object_mut()
         .ok_or("config serialization was not an object")?;
+    if let Some(picker) = &state.microphone {
+        object.insert(
+            "INPUT_DEVICE".into(),
+            serde_json::Value::String(picker.selected_id.clone()),
+        );
+        object.insert(
+            "INPUT_DEVICE_NAME".into(),
+            serde_json::Value::String(picker.selected_name.clone()),
+        );
+    }
     for field in FIELDS {
         let hwnd = state.controls[field.key];
         let value = match field.kind {
@@ -2203,6 +2335,7 @@ fn enable_controls(state: &SettingsState, enabled: bool) {
         .chain(state.page_buttons.iter())
         .chain(std::iter::once(&state.language_control))
         .chain(state.language_items.iter())
+        .chain(state.microphone.iter().map(|picker| &picker.button))
     {
         unsafe {
             let _ = EnableWindow(*control, enabled);

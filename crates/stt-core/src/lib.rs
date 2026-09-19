@@ -12,6 +12,8 @@ pub mod text_input;
 
 pub use config::Config;
 
+pub mod audio_devices;
 pub mod audio_intervals;
+mod capture_wav;
 pub mod embedded_ffmpeg;
 pub mod vad;

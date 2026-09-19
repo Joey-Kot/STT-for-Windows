@@ -39,6 +39,7 @@ temp/
 Temp-Scrape/
 vad-audio-tmp/
 native-audio-test-tmp/
+microphone-audio-tmp/
 
 # Editor and OS files
 .idea/

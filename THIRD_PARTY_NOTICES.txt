@@ -12,12 +12,11 @@ include their complete license texts in `THIRD_PARTY_LICENSES/`.
 - Full license text: `THIRD_PARTY_LICENSES/FFmpeg-GPL-3.0-or-later.txt`
 - Build configuration: `scripts/build-ffmpeg-windows-amd64.sh`
 
-## PortAudio
+## Windows audio capture
 
-- Version: v19.7.0
-- Source: https://github.com/PortAudio/portaudio
-- License: MIT
-- Full license text: `THIRD_PARTY_LICENSES/PortAudio-MIT.txt`
+Capture uses the Windows system WASAPI interfaces through the `windows` crate.
+Current releases do not link PortAudio. Its build script and MIT license text
+are retained for reference to earlier releases.
 
 ## Audio codec libraries
 

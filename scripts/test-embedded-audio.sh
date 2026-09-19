@@ -16,7 +16,7 @@ cd "$task_dir/build"
     --enable-protocol=file \
     --enable-demuxer=wav,mp3,flac,ogg,mov,aac,matroska,wv,ac3,eac3 \
     --enable-parser=mpegaudio,flac,opus,vorbis,aac,aac_latm,ac3 \
-    --enable-decoder=mp3,mp3float,mp2,flac,opus,vorbis,aac,aac_latm,alac,wavpack,ac3,eac3,pcm_u8,pcm_s16le,pcm_s24le,pcm_f32le \
+    --enable-decoder=mp3,mp3float,mp2,flac,opus,vorbis,aac,aac_latm,alac,wavpack,ac3,eac3,pcm_u8,pcm_s16le,pcm_s24le,pcm_s32le,pcm_f32le \
     --enable-encoder=pcm_s16le,pcm_s24le,pcm_f32le,flac,aac,ac3,eac3,alac,wavpack,libopus,libmp3lame,libvorbis \
     --enable-muxer=wav,flac,adts,ipod,mp4,ac3,eac3,wv,ogg,mp3,webm \
     --enable-libopus --enable-libmp3lame --enable-libvorbis

@@ -218,6 +218,7 @@ fn run_inner() -> Result<(), String> {
     unsafe {
         while GetMessageW(&mut message, None, 0, 0).0 > 0 {
             if message.message == WM_KEYDOWN
+                && !crate::settings::microphone_handles_escape(message.hwnd)
                 && message.wParam.0
                     == windows::Win32::UI::Input::KeyboardAndMouse::VK_ESCAPE.0 as usize
             {

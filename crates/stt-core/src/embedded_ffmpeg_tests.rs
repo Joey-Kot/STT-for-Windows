@@ -164,6 +164,79 @@ fn speech() -> Vec<i16> {
 }
 
 #[tokio::test]
+async fn native_capture_formats_reencode_with_and_without_vad() {
+    use crate::audio_devices::test_capture_format;
+    use crate::capture_wav::CaptureWav;
+    let dir = tempfile::tempdir().unwrap();
+    let input = dir.path().join("capture.wav");
+    let output = dir.path().join("upload.wav");
+    let mut source = vec![0_i16; 16000];
+    source.extend(speech());
+    source.extend(vec![0; 16000]);
+    for rate in [44100_u32, 48000] {
+        for (bits, valid, float) in [
+            (16, 16, false),
+            (24, 24, false),
+            (32, 24, false),
+            (32, 32, false),
+            (32, 32, true),
+        ] {
+            let format = test_capture_format(rate, 2, bits, valid, float);
+            let frame_count = source.len() * rate as usize / 16000;
+            let mut bytes = Vec::new();
+            for frame in 0..frame_count {
+                let value = source[frame * 16000 / rate as usize];
+                let sample = if float {
+                    (f32::from(value) / 32768.0).to_le_bytes().to_vec()
+                } else {
+                    ((i32::from(value) << 16).to_le_bytes()[4 - usize::from(bits / 8)..]).to_vec()
+                };
+                bytes.extend_from_slice(&sample);
+                bytes.extend_from_slice(&sample);
+            }
+            let mut writer = CaptureWav::create(&input, &format).unwrap();
+            writer.write(&bytes).unwrap();
+            writer.finalize().unwrap();
+            for enable_vad in [false, true] {
+                // Explicit PCM codecs determine bit depth; "pcm" means pcm_s16le.
+                let config = Config {
+                    enable_vad,
+                    codecs: "pcm_s24le".into(),
+                    container: "wav".into(),
+                    sampling_rate: 24000,
+                    sampling_rate_depth: 24,
+                    channels: 1,
+                    ..Default::default()
+                };
+                EmbeddedFfmpegConverter
+                    .convert(
+                        &CancellationToken::new(),
+                        &config,
+                        &input,
+                        &output,
+                        rate as i32,
+                    )
+                    .await
+                    .unwrap_or_else(|error| {
+                        panic!("{rate} Hz {bits}/{valid} float={float} VAD={enable_vad}: {error}")
+                    });
+                let reader = hound::WavReader::open(&output).unwrap();
+                assert_eq!(reader.spec().sample_rate, 24000);
+                assert_eq!(reader.spec().channels, 1);
+                assert_eq!(reader.spec().bits_per_sample, 24);
+                let full_frames = source.len() as u32 * 24000 / 16000;
+                if enable_vad {
+                    assert!(reader.duration() < full_frames - 24000);
+                    assert!(reader.duration() > 2400);
+                } else {
+                    assert!(reader.duration().abs_diff(full_frames) <= 2);
+                }
+            }
+        }
+    }
+}
+
+#[tokio::test]
 async fn speech_silence_tail_stereo_and_non48k() {
     let dir = tempfile::tempdir().unwrap();
     let input = dir.path().join("input.wav");
