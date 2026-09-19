@@ -2,7 +2,7 @@
 use crate::{audio_intervals::AudioInterval, converter::ConvertError};
 
 const FRAME: usize = 256;
-const START_THRESHOLD: f32 = 0.9;
+const START_THRESHOLD: f32 = 0.6;
 const CONTINUE_THRESHOLD: f32 = 0.5;
 const START_FRAMES: u64 = 3;
 const LOOKBACK_FRAMES: u64 = 6;
@@ -132,10 +132,10 @@ mod tests {
     #[test]
     fn hysteresis_flush_and_short_bursts() {
         let mut vad = Vad::default();
-        vad.accept(0.9, 256).unwrap();
+        vad.accept(0.6, 256).unwrap();
         vad.accept(0.0, 256).unwrap();
         for _ in 0..4 {
-            vad.accept(0.9, 256).unwrap();
+            vad.accept(0.6, 256).unwrap();
         }
         for _ in 0..5 {
             vad.accept(0.0, 256).unwrap();
@@ -149,14 +149,14 @@ mod tests {
             }]
         );
         let mut vad = Vad::default();
-        vad.accept(0.9, 17).unwrap();
+        vad.accept(0.6, 17).unwrap();
         assert!(vad.finish().unwrap().is_empty());
     }
 
     #[test]
     fn startup_requires_three_consecutive_high_scores() {
         let mut vad = Vad::default();
-        for score in [0.5, 0.89, 0.9, 0.9, 0.89, 0.9, 0.9] {
+        for score in [0.5, 0.59, 0.6, 0.6, 0.59, 0.6, 0.6] {
             vad.accept(score, FRAME as u64).unwrap();
         }
         assert!(vad.finish().unwrap().is_empty());
@@ -169,7 +169,7 @@ mod tests {
             vad.accept(0.5, FRAME as u64).unwrap();
         }
         for _ in 0..3 {
-            vad.accept(0.9, FRAME as u64).unwrap();
+            vad.accept(0.6, FRAME as u64).unwrap();
         }
         assert_eq!(vad.voiced, LOOKBACK_FRAMES);
         for _ in 0..2 {
@@ -192,7 +192,7 @@ mod tests {
     #[test]
     fn silence_resets_candidate_and_three_frames_are_discarded() {
         let mut vad = Vad::default();
-        for score in [0.5, 0.9, 0.9, 0.49, 0.9, 0.9, 0.9] {
+        for score in [0.5, 0.6, 0.6, 0.49, 0.6, 0.6, 0.6] {
             vad.accept(score, FRAME as u64).unwrap();
         }
         assert!(vad.finish().unwrap().is_empty());
@@ -202,7 +202,7 @@ mod tests {
     fn partial_tail_counts_as_one_voice_frame_with_real_endpoint() {
         let mut vad = Vad::default();
         for _ in 0..3 {
-            vad.accept(0.9, FRAME as u64).unwrap();
+            vad.accept(0.6, FRAME as u64).unwrap();
         }
         vad.accept(0.5, 17).unwrap();
         assert_eq!(
