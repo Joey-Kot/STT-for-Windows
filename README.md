@@ -1,4 +1,4 @@
-English | [简体中文](README_ZH.md)
+[English](README.md) | [简体中文](README_ZH.md)
 
 # STT for Windows
 
@@ -34,7 +34,7 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
   - GUI and CLI hotkey mode retain only the latest completed recording in process memory, capped at 100,000,000 bytes; the buffer is released when the application exits.
   - The GUI reuses the cancel-button slot for retry, while both programs reuse the Cancel or Retry hotkey whenever they are idle with a retryable recording.
 - **Automatic extraction and paste**
-  - Uses `TEXT_PATH` to read text from JSON responses, including nested objects and repeated array indexes.
+  - Uses standard JSONPath in `TEXT_PATH` to select exactly one value from JSON responses, including nested fields, array indexes, and filters.
   - Saves the original clipboard text, sends `Ctrl+V`, and then attempts to restore it.
 - **Shared embedded audio processing**
   - GUI and CLI share microphone discovery, stable endpoint selection, and device-format capture in `stt-core`.
@@ -79,12 +79,17 @@ flowchart LR
     Runtime --> Recorder["WASAPI<br/>Selected microphone / system default"]
     Recorder --> WAV["WAV preserving capture rate, channels and precision"]
 
-    WAV --> Convert["Recording conversion abstraction"]
+    WAV --> Convert["stt-core shared audio preparation"]
     WAV --> RetryBuffer["GUI and CLI retry buffer<br/>latest completed WAV, memory only, ≤100 MB"]
-    RetryBuffer -->|Retry| Convert
-    Convert --> LibAv["Shared embedded libav + optional Earshot VAD"]
-    FilePipeline --> LibAv
-
+    RetryBuffer -->|Restore original WAV temporarily| Convert
+    FilePipeline --> Convert
+    Convert --> VAD{ENABLE_VAD}
+    VAD -->|false, default| LibAv["Embedded libav<br/>Resample, encode and mux original audio per configuration"]
+    VAD -->|true| Analyze["Embedded libav decodes to 16 kHz mono PCM<br/>Earshot speech detection"]
+    Analyze --> Speech{Speech intervals found?}
+    Speech -->|Yes| Trim["Merge intervals and apply padding<br/>Map to original audio, trim and concatenate"]
+    Trim --> LibAv
+    Speech -->|No| NoSpeech["No ASR request<br/>Recording mode clears retry buffer and returns Idle<br/>File mode reports no speech and exits successfully"]
     LibAv --> Request["ASR multipart request"]
     Request --> Extract["JSON + TEXT_PATH"]
 
@@ -106,14 +111,15 @@ sequenceDiagram
     participant Control as GUI / global hotkeys
     participant Runtime as Rust state machine
     participant Recorder as WASAPI
-    participant Converter as embedded libav
+    participant Converter as Shared libav / Earshot VAD
     participant ASR as ASR HTTP API
     participant Clipboard as Windows clipboard
     participant App as Current foreground app
 
     User->>Control: Start
     Control->>Runtime: toggle recording
-    Runtime->>Recorder: Initialize device and create WAV
+    Runtime->>Recorder: Resolve selected or default device, negotiate capture format and create WAV
+    Note over Runtime,Recorder: Report unavailable selected device without switching microphones
     Recorder-->>Runtime: Recording
 
     opt Pause and resume
@@ -128,18 +134,49 @@ sequenceDiagram
     Recorder-->>Runtime: RecordingResult
     Runtime->>Runtime: Keep latest completed WAV in memory when ≤100 MB
     Runtime->>Runtime: Enter Uploading
-    Runtime->>Converter: Convert to configured codec and container
+    Runtime->>Converter: Prepare upload audio from original WAV
+    opt ENABLE_VAD=true
+        Converter->>Converter: Analyze 16 kHz mono PCM, merge speech intervals and apply padding
+    end
+    break VAD detects no speech
+        Converter-->>Runtime: NoSpeech
+        Runtime->>Runtime: Clean temporary audio and clear retry buffer
+        Runtime-->>Control: Idle / No speech detected#59; no ASR request
+    end
+    Note over Converter: With VAD enabled, trim and concatenate original audio<br/>Convert using configured channels, rate, depth, bitrate, codec and container
+    break Audio preparation canceled or failed
+        Converter-->>Runtime: Cancellation or conversion error#59; clean incomplete output
+        alt Canceled
+            Runtime-->>Control: Idle / Request canceled
+        else Retry buffer available
+            Runtime-->>Control: Idle / Report error#59; manual retry available
+        else No retry buffer
+            Runtime-->>Control: Error
+        end
+    end
     Converter-->>Runtime: Converted audio
     Runtime->>ASR: multipart/form-data POST
+    Note over Runtime,ASR: Network errors or non-200 responses retry with exponential backoff<br/>With VAD enabled, reanalyze, trim and transcode original audio before each retry
 
     alt Manual cancellation
         User->>Control: Cancel button / Cancel or Retry hotkey
         Control->>Runtime: Cancel active request token
         Runtime-->>ASR: Abort upload, response read, or retry wait
         Runtime-->>Control: Idle / Request canceled
-    else HTTP 200
+    else HTTP 200 but JSON parsing or text extraction fails
+        ASR-->>Runtime: Response body
+        Note over Runtime,Control: Report extraction error#59; no automatic upload retry or paste
+        alt Retry buffer available
+            Runtime-->>Control: Idle / Manual retry available
+        else No retry buffer
+            Runtime-->>Control: Error
+        end
+    else HTTP 200 and text extraction succeeds
         ASR-->>Runtime: JSON response
         Runtime->>Runtime: Extract text through TEXT_PATH
+        break Extracted text is empty
+            Runtime-->>Control: Idle / No text output
+        end
         Note over Runtime,App: Shared core output entry<br/>State remains Uploading during input
         alt USE_SENDINPUT=true
             Runtime->>Runtime: Wait for modifier release and send UTF-16 batches
@@ -179,6 +216,7 @@ sequenceDiagram
     opt Retry is available
         User->>Control: Retry icon or Cancel or Retry hotkey
         Control->>Runtime: Restore buffered WAV temporarily and retry
+        Note over Runtime,Converter: Reenter Uploading and repeat the same audio preparation and request flow
     end
 ```
 
@@ -206,13 +244,14 @@ stateDiagram-v2
 
     Uploading --> Idle: Clipboard paste succeeded or SendInput delivery completed
     Uploading --> Idle: Empty transcription
+    Uploading --> Idle: VAD detects no speech; clear retry buffer and skip ASR
     Uploading --> Idle: Conversion or request canceled, clipboard canceled, or SendInput canceled before delivery
     Uploading --> Idle: Processing failed with retry buffer
     Uploading --> Error: Processing failed without retry buffer
 
     note right of Uploading
-        Includes conversion, ASR requests and text output
-        Processing failures include conversion or upload failure, input failure,
+        Includes optional VAD analysis and trimming, conversion, ASR requests and text output
+        Processing failures include conversion, upload or text extraction failure, input failure,
         clipboard restore failure, partial SendInput delivery or cancellation after delivery
         Partial delivery or cancellation after delivery warns text may already exist
         No automatic channel fallback or text resend
@@ -223,7 +262,7 @@ stateDiagram-v2
 
 Normal actions use a non-queuing action lock. Repeated start, stop, or pause actions received while busy are dropped instead of being queued for later execution. Cancellation in the `Uploading` state is the exception: it bypasses the action lock and directly cancels the active request token.
 
-The retry buffer is replaced only when a new recording is completed. Canceling while recording leaves the previous buffered recording untouched; canceling while uploading retains the recording whose request was canceled. A retry keeps its own buffered recording after either success or failure.
+The retry buffer is replaced only when a new recording is completed. Canceling while recording leaves the previous buffered recording untouched; canceling while uploading retains the recording whose request was canceled. A retry keeps its own buffered recording after either success or failure. When VAD detects no speech, the retry buffer is cleared, no ASR request is sent, and the state returns to `Idle`.
 
 ## Capabilities and current limitations
 
@@ -379,7 +418,7 @@ Use command-line overrides only:
   --api-endpoint "https://api.example.com/v1/audio/transcriptions" `
   --token "your-token" `
   --model "your-model" `
-  --text-path "text"
+  --text-path '$.text'
 ```
 
 After startup, the program prints state changes to the terminal. Press `Ctrl+C` to exit.
@@ -460,7 +499,7 @@ If `--output` is omitted, the default output is `<input-file-name>.txt` in the c
 | `--model <MODEL>` | Overrides the model field |
 | `--language <LANGUAGE>` | Overrides the request language field |
 | `--prompt <TEXT>` | Overrides the prompt |
-| `--text-path <PATH>` | Overrides the response text path |
+| `--text-path <PATH>` | Overrides the JSONPath selecting exactly one response value (default `$.text`) |
 | `--extra-config <JSON>` | Overrides the stringified extra JSON object |
 
 #### Audio
@@ -534,7 +573,7 @@ The GUI and CLI use the same JSON data structure. Missing fields receive their d
   "MODEL": "gpt-4o-mini-transcribe",
   "LANGUAGE": "zh",
   "PROMPT": "",
-  "TEXT_PATH": "text",
+  "TEXT_PATH": "$.text",
   "ExtraConfig": "{\"response_format\":\"json\",\"temperature\":0}",
   "OPACITY": 1.0,
   "WINDOW_SCALE": 1.0,
@@ -587,7 +626,7 @@ This is only a protocol example. The actual model name, fields, supported audio 
 | `MODEL` | `""` | Sends the multipart field `model` when non-empty |
 | `LANGUAGE` | `""` | Sends the multipart field `language` when non-empty |
 | `PROMPT` | `""` | Sends the multipart field `prompt` when non-empty |
-| `TEXT_PATH` | `"text"` | Reads the transcription from the JSON response |
+| `TEXT_PATH` | `"$.text"` | JSONPath selecting exactly one string, number, or boolean from the response; no fallback |
 | `ExtraConfig` | `""` | Stringified JSON object used to add, remove, or override multipart fields |
 
 ### Audio fields
@@ -709,26 +748,56 @@ For example, this configuration removes `language` and overrides `model`:
 
 ### TEXT_PATH
 
-`TEXT_PATH` uses dot-separated object fields and allows any number of array indexes after a field:
+`TEXT_PATH` uses standard JSONPath through [`serde_json_path`](https://docs.rs/serde_json_path/0.7.2/serde_json_path/). The default `$.text` selects the top-level `text` field. Paths start with `$`, which represents the response root.
 
-```text
-text
-result.transcript
-results[0].alternatives[0].transcript
-data.items[0][1].text
+The query must match **exactly one node**. Strings are used directly; numbers and booleans are converted to text. Objects, arrays, and `null` are rejected. There is no fallback to another field, no automatic selection of the first match, and no concatenation of multiple matches.
+
+#### Common selectors
+
+| Purpose | JSONPath | Meaning |
+|---|---|---|
+| Top-level field | `$.text` | Select `text` at the root |
+| Nested field | `$.result.transcript` | Select `transcript` inside `result` |
+| Array indexes | `$.results[0].alternatives[0].transcript` | Select the first alternative of the first result; indexes start at zero |
+| Repeated indexes | `$.data.items[0][1].text` | Select `text` from the second element of the first inner array |
+| Last array element | `$.segments[-1].text` | Select the last segment's text |
+| Field containing a dot | `$['result.text']` | Select the literal field named `result.text` |
+| Other special field names | `$['recognition result']['text-value']` | Access fields with spaces or hyphens |
+| Condition | `$.segments[?@.id == 42].text` | Select text from segments whose `id` is 42; `@` is the current segment |
+| Wildcard | `$.segments[*].text` | Select every segment's text |
+| Slice | `$.segments[0:2].text` | Select text from segments 0 and 1; the end index is exclusive |
+| Recursive search | `$..text` | Select fields named `text` at any depth |
+
+Filters, wildcards, slices, and recursive searches can match multiple nodes. They are valid for `TEXT_PATH` only when the actual response yields exactly one node.
+
+For example, given this response:
+
+```json
+{
+  "segments": [
+    {"id": 1, "text": "First sentence."},
+    {"id": 42, "text": "Second sentence."}
+  ]
+}
 ```
 
-Strings, numbers, and booleans are converted to text. If the configured path cannot be read, the application tries, in order:
+`$.segments[0].text` returns `First sentence.`; `$.segments[-1].text` and `$.segments[?@.id == 42].text` return `Second sentence.`. `$.segments[*].text`, `$.segments[0:2].text`, and `$..text` each match two nodes and report an error.
 
-1. Top-level `text`.
-2. The first non-empty top-level string field.
-3. An empty string.
+Appending a selector operates on each matched JSON value, not on the entire result list. `$.segments[*].text[0]` attempts to index each `text` as an array; strings are not arrays, so this example matches nothing. To select the first segment's text, use `$.segments[0].text`.
 
-Text cannot be extracted from a non-JSON response. If an HTTP 200 response produces an empty result, the state returns to `Idle` without pasting placeholder text.
+In a JSON configuration, write `"TEXT_PATH": "$.segments[?@.id == 42].text"`. In PowerShell, use single quotes to preserve the expression literally, for example `--text-path '$.segments[?@.id == 42].text'`.
+
+#### Validation and errors
+
+- Empty or malformed paths produce a `TEXT_PATH` syntax error during configuration validation, including GUI Save, and are rejected before any ASR request.
+- A non-JSON response, zero matches, multiple matches, or an unsupported value type produces an extraction error. Multiple-match errors include the match count.
+- Extraction errors do not trigger automatic upload retries or paste `[request failed]`. GUI and CLI hotkey mode report the error and retain a retryable recording when available; CLI file mode exits with code `1` without writing a transcription file.
+- A selected empty string is a successful extraction. GUI and CLI hotkey mode return to `Idle` without pasting anything; file mode writes an empty text file.
 
 ### Retries and cancellation
 
 - Request errors and non-200 responses enter the retry flow.
+- JSONPath syntax and response extraction errors do not enter the automatic retry flow.
 - `MAX_RETRY` includes the first request.
 - The wait begins at `RETRY_BASE_DELAY` and is multiplied by 2 after each failure.
 - Manual cancellation aborts an in-progress request send, response read, or retry wait.
@@ -801,7 +870,7 @@ When `KEEP_CACHE=false` or `CACHE_DIR` is empty, temporary audio is deleted afte
 audio-YYYY-MM-DD-HH.MM.SS.<ext>
 ```
 
-Only an HTTP 200 response is written to the corresponding `.json` file. Failures and cancellations before a successful response do not produce a response JSON file.
+Only an HTTP 200 response is written to the corresponding `.json` file, including the original body when JSON parsing or text extraction fails. That body is not necessarily valid JSON. Failures and cancellations before a successful HTTP response do not produce a response JSON file.
 
 The GUI and CLI hotkey-mode retry buffer is separate from this optional disk cache. It retains only the latest completed WAV in memory, up to 100,000,000 bytes, and is released when the process exits (including normal shutdown, logout, or power-off). A retry temporarily recreates a `RecordTemp_` WAV for conversion and removes it after the attempt; it does not create a persistent retry cache. `KEEP_CACHE` continues to control the existing optional audio archive for normal recording requests.
 

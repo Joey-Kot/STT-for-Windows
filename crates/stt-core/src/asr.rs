@@ -27,6 +27,14 @@ pub enum AsrError {
     Preparation(#[from] crate::converter::ConvertError),
     #[error("API endpoint is empty")]
     EmptyEndpoint,
+    #[error("{0}")]
+    InvalidTextPath(#[from] jsonpath::TextPathError),
+    #[error("{source}")]
+    TextExtraction {
+        #[source]
+        source: jsonpath::TextExtractionError,
+        last_response: Vec<u8>,
+    },
     #[error("invalid extra-config JSON: {0}")]
     InvalidExtraConfig(#[from] serde_json::Error),
     #[error("{0}")]
@@ -50,7 +58,8 @@ impl AsrError {
 
     pub fn last_response(&self) -> &[u8] {
         match self {
-            Self::RetryExhausted { last_response, .. } => last_response,
+            Self::RetryExhausted { last_response, .. }
+            | Self::TextExtraction { last_response, .. } => last_response,
             _ => &[],
         }
     }
@@ -60,11 +69,13 @@ impl AsrError {
 pub struct AsrClient {
     config: Config,
     client: Client,
+    text_path: serde_json_path::JsonPath,
     extra_config: Option<BTreeMap<String, Value>>,
 }
 
 impl AsrClient {
     pub fn new(config: Config) -> Result<Self, AsrError> {
+        let text_path = jsonpath::parse_text_path(&config.text_path)?;
         let extra_config = if config.extra_config.is_empty() {
             None
         } else {
@@ -90,6 +101,7 @@ impl AsrClient {
             config,
             client,
             extra_config,
+            text_path,
         })
     }
 
@@ -129,8 +141,13 @@ impl AsrClient {
             }
             let (succeeded, response) = self.upload_once(cancellation, file_path).await?;
             if succeeded {
+                let text = jsonpath::extract_text_from_response(&response, &self.text_path)
+                    .map_err(|source| AsrError::TextExtraction {
+                        source,
+                        last_response: response.clone(),
+                    })?;
                 return Ok(Transcription {
-                    text: jsonpath::extract_text_from_response(&response, &self.config.text_path),
+                    text,
                     raw_response: response,
                 });
             }
@@ -303,6 +320,97 @@ pub fn format_response(response: &[u8]) -> String {
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn rejects_invalid_text_paths_before_creating_client() {
+        for path in ["", "text", "$.segments["] {
+            let config = crate::Config {
+                text_path: path.into(),
+                ..Default::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("TEXT_PATH")
+            );
+            assert!(matches!(
+                super::AsrClient::new(config),
+                Err(super::AsrError::InvalidTextPath(_))
+            ));
+        }
+    }
+
+    #[tokio::test]
+    async fn extraction_errors_preserve_response_and_do_not_retry() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        for (body, path) in [
+            ("not JSON", "$.text"),
+            (r#"{"text":"fallback","other":"fallback"}"#, "$.missing"),
+            (r#"{"text":null}"#, "$.text"),
+            (
+                r#"{"segments":[{"text":"a"},{"text":"b"}]}"#,
+                "$.segments[*].text",
+            ),
+        ] {
+            let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+            let address = listener.local_addr().unwrap();
+            let server = tokio::spawn(async move {
+                let (mut stream, _) = listener.accept().await.unwrap();
+                let mut request = Vec::new();
+                loop {
+                    let mut buffer = [0; 4096];
+                    let n = stream.read(&mut buffer).await.unwrap();
+                    assert!(n > 0);
+                    request.extend_from_slice(&buffer[..n]);
+                    if let Some(end) = request.windows(4).position(|v| v == b"\r\n\r\n") {
+                        let headers = String::from_utf8_lossy(&request[..end]).to_lowercase();
+                        let length = headers
+                            .lines()
+                            .find_map(|s| s.strip_prefix("content-length: "))
+                            .and_then(|s| s.trim().parse::<usize>().ok());
+                        if length.is_some_and(|n| request.len() >= end + 4 + n)
+                            || request.ends_with(b"0\r\n\r\n")
+                        {
+                            break;
+                        }
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 200 OK\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                    body.len()
+                );
+                stream.write_all(response.as_bytes()).await.unwrap();
+            });
+            let dir = tempfile::tempdir().unwrap();
+            let audio = dir.path().join("audio.wav");
+            std::fs::write(&audio, b"audio").unwrap();
+            let client = super::AsrClient::new(crate::Config {
+                api_endpoint: format!("http://{address}"),
+                text_path: path.into(),
+                max_retry: 3,
+                retry_base_delay: 0.0,
+                ..Default::default()
+            })
+            .unwrap();
+            let error = tokio::time::timeout(
+                std::time::Duration::from_secs(5),
+                client.transcribe_with_retry_prepare(
+                    &tokio_util::sync::CancellationToken::new(),
+                    &audio,
+                    || async { panic!("extraction errors must not retry the upload") },
+                ),
+            )
+            .await
+            .unwrap()
+            .unwrap_err();
+            assert!(matches!(error, super::AsrError::TextExtraction { .. }));
+            assert!(!error.is_retry_exhausted());
+            assert_eq!(error.last_response(), body.as_bytes());
+            server.await.unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn retry_rebuilds_audio_before_uploading_again() {
         use std::sync::{

@@ -99,7 +99,7 @@ impl Default for Config {
             model: String::new(),
             language: String::new(),
             prompt: String::new(),
-            text_path: "text".into(),
+            text_path: "$.text".into(),
             extra_config: String::new(),
             opacity: 1.0,
             window_scale: 1.0,
@@ -191,6 +191,8 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        crate::jsonpath::parse_text_path(&self.text_path)
+            .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         if self.vad_padding_ms > 1000 {
             return Err(ConfigError::Invalid(
                 "invalid VAD_PADDING_MS (allowed 0..=1000 ms)".into(),
@@ -393,7 +395,7 @@ mod tests {
     fn missing_and_unknown_fields_are_compatible() {
         let cfg: Config = serde_json::from_str(r#"{"UNKNOWN":1,"CHANNELS":2}"#).unwrap();
         assert_eq!(cfg.channels, 2);
-        assert_eq!(cfg.text_path, "text");
+        assert_eq!(cfg.text_path, "$.text");
         assert_eq!(cfg.codecs, "opus");
         assert_eq!(cfg.clipboard_write_delay, 80);
         assert_eq!(cfg.clipboard_restore_delay, 120);

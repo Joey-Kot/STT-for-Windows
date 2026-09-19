@@ -41,7 +41,7 @@ struct Arguments {
     /// Prompt multipart field.
     #[arg(long, value_name = "TEXT", help_heading = "API")]
     prompt: Option<String>,
-    /// Dot path used to extract text from the JSON response.
+    /// JSONPath selecting exactly one string, number or boolean (default: $.text).
     #[arg(long, value_name = "PATH", help_heading = "API")]
     text_path: Option<String>,
     /// Stringified JSON object with extra multipart fields.

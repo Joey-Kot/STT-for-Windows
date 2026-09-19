@@ -1,4 +1,4 @@
-[English](README.md) | 简体中文
+[English](README.md) | [简体中文](README_ZH.md)
 
 # STT for Windows
 
@@ -34,7 +34,7 @@ STT for Windows 是一个面向 Windows x86_64 的本地语音转文字客户端
   - GUI 和 CLI 的快捷键模式仅在进程内保存最近一条已结束录音，大小上限为 100,000,000 字节；退出程序时释放。
   - GUI 会复用取消按钮的位置显示重试；两个程序都在空闲且存在可重试录音时复用取消或重试快捷键。
 - **自动提取与粘贴**
-  - 使用 `TEXT_PATH` 从 JSON 响应中读取文本，支持多层对象和重复数组索引。
+  - 使用 `TEXT_PATH` 中的标准 JSONPath 从 JSON 响应中选取唯一值，支持嵌套字段、数组索引和条件过滤。
   - 暂存原剪贴板文本，发送 `Ctrl+V` 后再尝试恢复。
 - **共享内嵌音频处理**
   - GUI 和 CLI 共用 `stt-core` 的麦克风枚举、稳定设备标识选择和设备默认格式采集。
@@ -79,12 +79,17 @@ flowchart LR
     Runtime --> Recorder["WASAPI<br/>指定麦克风 / 系统默认"]
     Recorder --> WAV["保留采集采样率、声道和精度的 WAV"]
 
-    WAV --> Convert["录音音频转换抽象"]
+    WAV --> Convert["stt-core 共享音频准备入口"]
     WAV --> RetryBuffer["GUI 和 CLI 重试缓冲<br/>最近一条已结束 WAV，仅内存，≤100 MB"]
-    RetryBuffer -->|重试| Convert
-    Convert --> LibAv["共享内嵌 libav + 可选 Earshot VAD"]
-    FilePipeline --> LibAv
-
+    RetryBuffer -->|临时还原原始 WAV| Convert
+    FilePipeline --> Convert
+    Convert --> VAD{ENABLE_VAD}
+    VAD -->|false，默认| LibAv["内嵌 libav<br/>从原始音频按配置重采样、编码与封装"]
+    VAD -->|true| Analyze["内嵌 libav 解码为 16 kHz 单声道 PCM<br/>Earshot 检测语音区间"]
+    Analyze --> Speech{有语音区间?}
+    Speech -->|有| Trim["合并区间并添加 padding<br/>映射至原始音频，裁剪与拼接"]
+    Trim --> LibAv
+    Speech -->|无| NoSpeech["不请求 ASR<br/>录音模式清除重试缓冲并返回 Idle<br/>文件模式提示无语音并正常退出"]
     LibAv --> Request["ASR multipart 请求"]
     Request --> Extract["JSON + TEXT_PATH"]
 
@@ -106,14 +111,15 @@ sequenceDiagram
     participant Control as GUI / 全局快捷键
     participant Runtime as Rust 状态机
     participant Recorder as WASAPI
-    participant Converter as 内嵌 libav
+    participant Converter as 共享 libav / Earshot VAD
     participant ASR as ASR HTTP API
     participant Clipboard as Windows 剪贴板
     participant App as 当前前台应用
 
     User->>Control: 开始
     Control->>Runtime: toggle recording
-    Runtime->>Recorder: 初始化设备并创建 WAV
+    Runtime->>Recorder: 解析指定或系统默认设备，协商采集格式并创建 WAV
+    Note over Runtime,Recorder: 指定设备不可用时报告错误，不切换麦克风
     Recorder-->>Runtime: Recording
 
     opt 暂停与恢复
@@ -128,18 +134,49 @@ sequenceDiagram
     Recorder-->>Runtime: RecordingResult
     Runtime->>Runtime: 若 WAV ≤100 MB，则保留最近一条于内存
     Runtime->>Runtime: 进入 Uploading
-    Runtime->>Converter: 转换到配置的编码与容器
+    Runtime->>Converter: 从原始 WAV 准备上传音频
+    opt ENABLE_VAD=true
+        Converter->>Converter: 16 kHz 单声道分析，合并语音区间并添加 padding
+    end
+    break VAD 未检测到语音
+        Converter-->>Runtime: NoSpeech
+        Runtime->>Runtime: 清理临时音频并清除重试缓冲
+        Runtime-->>Control: Idle / 未检测到语音，不请求 ASR
+    end
+    Note over Converter: VAD 开启时从原始音频裁剪与拼接<br/>按配置的声道、采样率、位深、码率、编码与容器转换
+    break 音频准备期间取消或失败
+        Converter-->>Runtime: 取消或转换错误；清理不完整输出
+        alt 已取消
+            Runtime-->>Control: Idle / 请求已取消
+        else 有重试缓冲
+            Runtime-->>Control: Idle / 显示错误，可手动重试
+        else 无重试缓冲
+            Runtime-->>Control: Error
+        end
+    end
     Converter-->>Runtime: 转码音频
     Runtime->>ASR: multipart/form-data POST
+    Note over Runtime,ASR: 网络错误或非 200 按指数退避自动重试<br/>VAD 开启时，每次重试前重新分析、裁剪和转码原始音频
 
     alt 手动取消
         User->>Control: 取消按钮 / 取消或重试快捷键
         Control->>Runtime: 取消当前请求令牌
         Runtime-->>ASR: 中止上传、响应或重试等待
         Runtime-->>Control: Idle / 请求已取消
-    else HTTP 200
+    else HTTP 200 但 JSON 解析或文本提取失败
+        ASR-->>Runtime: 响应内容
+        Note over Runtime,Control: 显示提取错误；不自动重试上传，不粘贴文本
+        alt 有重试缓冲
+            Runtime-->>Control: Idle / 可手动重试
+        else 无重试缓冲
+            Runtime-->>Control: Error
+        end
+    else HTTP 200 且文本提取成功
         ASR-->>Runtime: JSON 响应
         Runtime->>Runtime: 按 TEXT_PATH 提取文本
+        break 提取结果为空字符串
+            Runtime-->>Control: Idle / 不输出文本
+        end
         Note over Runtime,App: 通过 core 统一入口输出；输入期间仍处于 Uploading
         alt USE_SENDINPUT=true
             Runtime->>Runtime: 等待修饰键释放，按 UTF-16 分批发送
@@ -179,6 +216,7 @@ sequenceDiagram
     opt 存在可重试录音
         User->>Control: 点击重试图标或按取消或重试快捷键
         Control->>Runtime: 临时还原缓冲 WAV 并重试
+        Note over Runtime,Converter: 重新进入 Uploading，执行同一音频准备与请求流程
     end
 ```
 
@@ -206,13 +244,14 @@ stateDiagram-v2
 
     Uploading --> Idle: 剪贴板粘贴成功或 SendInput 发送完成
     Uploading --> Idle: 识别结果为空
+    Uploading --> Idle: VAD 未检测到语音，清除重试缓冲，不请求 ASR
     Uploading --> Idle: 转换或请求取消、剪贴板操作取消、SendInput 发送前取消
     Uploading --> Idle: 处理失败且有重试缓冲
     Uploading --> Error: 处理失败且无重试缓冲
 
     note right of Uploading
-        包含转换、ASR 请求和文本输出
-        处理失败包括转换或上传失败、输入失败、
+        包含可选 VAD 分析与裁剪、转换、ASR 请求和文本输出
+        处理失败包括转换、上传或文本提取失败、输入失败、
         剪贴板恢复失败、SendInput 部分发送或发送后取消
         部分发送或发送后取消提示可能已有文本
         无自动通道回退或文本重发
@@ -223,7 +262,7 @@ stateDiagram-v2
 
 普通动作使用一个非排队动作锁。繁忙时重复的开始、停止或暂停动作会被丢弃，不会排队到稍后执行。`Uploading` 状态下的取消是例外：它绕过动作锁，直接取消当前请求令牌。
 
-只有结束一段新的录音才会替换重试缓冲。录制中取消会保留上一条缓冲录音；上传中取消会保留刚取消请求的录音。重试成功或失败后，仍保留同一条缓冲录音。
+只有结束一段新的录音才会替换重试缓冲。录制中取消会保留上一条缓冲录音；上传中取消会保留刚取消请求的录音。重试成功或失败后，仍保留同一条缓冲录音。VAD 未检测到语音是例外：会清除重试缓冲，不请求 ASR，并返回 `Idle`。
 
 ## 功能范围与当前限制
 
@@ -379,7 +418,7 @@ Display language、麦克风和六个音频输出下拉列表共用带内边距�
   --api-endpoint "https://api.example.com/v1/audio/transcriptions" `
   --token "your-token" `
   --model "your-model" `
-  --text-path "text"
+  --text-path '$.text'
 ```
 
 启动后程序会在终端打印状态变化。按 `Ctrl+C` 退出。
@@ -460,7 +499,7 @@ GUI 选择“跟随系统默认”时，即使下拉框同时显示当前默认�
 | `--model <MODEL>` | 覆盖模型字段 |
 | `--language <LANGUAGE>` | 覆盖请求语言字段 |
 | `--prompt <TEXT>` | 覆盖提示词 |
-| `--text-path <PATH>` | 覆盖响应文本路径 |
+| `--text-path <PATH>` | 覆盖用于选取唯一响应值的 JSONPath，默认为 `$.text` |
 | `--extra-config <JSON>` | 覆盖字符串化额外 JSON 对象 |
 
 #### Audio
@@ -534,7 +573,7 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
   "MODEL": "gpt-4o-mini-transcribe",
   "LANGUAGE": "zh",
   "PROMPT": "",
-  "TEXT_PATH": "text",
+  "TEXT_PATH": "$.text",
   "ExtraConfig": "{\"response_format\":\"json\",\"temperature\":0}",
   "OPACITY": 1.0,
   "WINDOW_SCALE": 1.0,
@@ -587,7 +626,7 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
 | `MODEL` | `""` | 非空时发送 multipart 字段 `model` |
 | `LANGUAGE` | `""` | 非空时发送 multipart 字段 `language` |
 | `PROMPT` | `""` | 非空时发送 multipart 字段 `prompt` |
-| `TEXT_PATH` | `"text"` | 从 JSON 响应读取识别文本 |
+| `TEXT_PATH` | `"$.text"` | 用 JSONPath 从响应中选取唯一的字符串、数字或布尔值；不回退 |
 | `ExtraConfig` | `""` | 字符串化 JSON 对象，用于增删或覆盖 multipart 字段 |
 
 ### 音频字段
@@ -709,26 +748,56 @@ multipart 内容：
 
 ### TEXT_PATH
 
-`TEXT_PATH` 使用点号分隔对象字段，并允许一个字段后跟任意数量的数组索引：
+`TEXT_PATH` 通过 [`serde_json_path`](https://docs.rs/serde_json_path/0.7.2/serde_json_path/) 使用标准 JSONPath。默认值 `$.text` 选择顶层 `text` 字段。路径以 `$` 开头，表示响应的根节点。
 
-```text
-text
-result.transcript
-results[0].alternatives[0].transcript
-data.items[0][1].text
+查询必须**恰好匹配一个节点**。字符串直接作为文本，数字和布尔值转换为文本；对象、数组和 `null` 会报错。没有其他字段回退，也不会自动取第一项或拼接多项结果。
+
+#### 常用选择器
+
+| 用途 | JSONPath | 含义 |
+|---|---|---|
+| 顶层字段 | `$.text` | 选择根对象的 `text` |
+| 嵌套字段 | `$.result.transcript` | 选择 `result` 内的 `transcript` |
+| 数组索引 | `$.results[0].alternatives[0].transcript` | 第一个结果的第一个候选文本；索引从 0 开始 |
+| 连续数组索引 | `$.data.items[0][1].text` | 第一个内层数组中第二项的 `text` |
+| 数组最后一项 | `$.segments[-1].text` | 最后一个分段的文本 |
+| 字段名含点号 | `$['result.text']` | 选择名字就是 `result.text` 的字段 |
+| 其他特殊字段名 | `$['recognition result']['text-value']` | 访问包含空格或连字符的字段 |
+| 条件过滤 | `$.segments[?@.id == 42].text` | 选择 `id` 为 42 的分段文本；`@` 表示当前分段 |
+| 通配符 | `$.segments[*].text` | 选择所有分段的文本 |
+| 切片 | `$.segments[0:2].text` | 选择索引 0、1 的分段文本；不包含结束索引 |
+| 递归查找 | `$..text` | 在任意层级查找名为 `text` 的字段 |
+
+条件过滤、通配符、切片和递归查找可能匹配多个节点。只有实际响应中最终恰好匹配一个节点时，才能用于 `TEXT_PATH`。
+
+例如，响应为：
+
+```json
+{
+  "segments": [
+    {"id": 1, "text": "第一句话。"},
+    {"id": 42, "text": "第二句话。"}
+  ]
+}
 ```
 
-字符串、数字和布尔值都会转换为文本。配置路径无法读取时，程序依次尝试：
+`$.segments[0].text` 返回“第一句话。”；`$.segments[-1].text` 和 `$.segments[?@.id == 42].text` 返回“第二句话。”。`$.segments[*].text`、`$.segments[0:2].text` 和 `$..text` 都会匹配两个节点，因此报错。
 
-1. 顶层 `text`。
-2. 顶层第一个非空字符串字段。
-3. 返回空字符串。
+追加选择器会作用于每个已匹配的 JSON 值，不会对整个结果列表取下标。`$.segments[*].text[0]` 会尝试将每个 `text` 当作数组取第一项；字符串不是数组，因此在此示例中没有匹配。要取第一个分段的文本，应写 `$.segments[0].text`。
 
-非 JSON 响应无法提取文本。HTTP 200 但结果为空时，状态返回 `Idle`，不会粘贴占位内容。
+JSON 配置中可以写 `"TEXT_PATH": "$.segments[?@.id == 42].text"`。PowerShell 参数建议用单引号保留表达式原文，例如 `--text-path '$.segments[?@.id == 42].text'`。
+
+#### 校验与错误
+
+- 空路径或非法语法会在配置校验时提示 `TEXT_PATH` 语法错误，包括 GUI 保存设置时；不会发送 ASR 请求。
+- 响应不是合法 JSON、没有匹配、匹配多个节点或值类型不受支持，均返回提取错误。多项匹配错误会显示匹配数量。
+- 提取错误不会自动重试上传，也不会粘贴 `[request failed]`。GUI 和 CLI 快捷键模式显示错误，有可重试录音时继续保留；CLI 文件模式以退出码 `1` 结束，不写入转写文本文件。
+- 匹配到空字符串属于提取成功。GUI 和 CLI 快捷键模式返回 `Idle`，不粘贴任何内容；文件模式写入空文本文件。
 
 ### 重试与取消
 
 - 请求错误和非 200 响应会进入重试流程。
+- JSONPath 语法错误和响应提取错误不进入自动重试流程。
 - `MAX_RETRY` 包含首次请求。
 - 等待时间从 `RETRY_BASE_DELAY` 开始，每次失败后乘以 2。
 - 手动取消会中止正在进行的请求发送、响应读取或重试等待。
@@ -801,7 +870,7 @@ RecordTemp_<16 位十六进制字符>.wav
 audio-YYYY-MM-DD-HH.MM.SS.<ext>
 ```
 
-只有 HTTP 200 的响应会写入对应的 `.json` 文件。失败或在收到成功响应前取消时，不会生成响应 JSON。
+只有 HTTP 200 的响应会写入对应的 `.json` 文件，包括 JSON 解析或文本提取失败时的原始响应；文件内容不一定是合法 JSON。失败或在收到 HTTP 成功响应前取消时，不会生成响应文件。
 
 GUI 和 CLI 快捷键模式的重试缓冲独立于这里的可选磁盘缓存：它只在内存中保留最近一条已结束 WAV，最大 100,000,000 字节，并会在进程退出时释放（包括正常关闭、注销或断电）。重试时会临时还原一个 `RecordTemp_` WAV 以供转换，并在本次尝试后删除；不会创建持久化重试缓存。`KEEP_CACHE` 仍只控制普通录音请求原有的可选音频归档。
 

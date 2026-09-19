@@ -4,7 +4,7 @@
   "MODEL": "gpt-4o-mini-transcribe",
   "LANGUAGE": "en",
   "PROMPT": "",
-  "TEXT_PATH": "text",
+  "TEXT_PATH": "$.text",
   "ExtraConfig": "{\"response_format\":\"json\",\"stream\":false,\"temperature\":0}",
   "INPUT_DEVICE": "",
   "INPUT_DEVICE_NAME": "",

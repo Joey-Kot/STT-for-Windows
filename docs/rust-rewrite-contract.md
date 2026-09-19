@@ -11,6 +11,9 @@ The Rust implementation removes these former public features:
 - the `NOTIFICATION` configuration field when serializing or saving;
 - the `--notification` CLI argument.
 
+The legacy `TEXT_PATH` dot-path syntax and automatic field fallback have also
+been replaced by standard JSONPath with exactly-one-result validation.
+
 Old JSON files containing `NOTIFICATION` remain readable because unknown
 fields are ignored. `REQUEST_FAILED_NOTIFICATION` remains supported and means
 “paste `[request failed]` after retries are exhausted”; it is not a system
@@ -28,7 +31,7 @@ defaults. Missing fields receive defaults and unknown fields are ignored.
 | `MODEL` | `""` | Multipart field only when non-empty |
 | `LANGUAGE` | `""` | Multipart field only when non-empty |
 | `PROMPT` | `""` | Multipart field only when non-empty |
-| `TEXT_PATH` | `"text"` | Dot path with repeated array indexes |
+| `TEXT_PATH` | `"$.text"` | Standard JSONPath selecting exactly one scalar; no fallback |
 | `ExtraConfig` | `""` | Must be a JSON object when non-empty |
 | `OPACITY` | `1.0` | GUI floating-window opacity; `0.10`–`1.00` in `0.01` steps, where `1.0` is fully opaque |
 | `WINDOW_SCALE` | `1.0` | GUI floating-window scale; `0.3`–`2.0` in `0.1` steps, shared by full and minimal modes |
@@ -65,11 +68,19 @@ organized into General, API, Audio, Network, Hotkeys, Cache, and Debug groups.
 
 ## TEXT_PATH
 
-The configured path supports dot-separated object keys and any number of
-array indexes in a token, for example
-`results[0].alternatives[0].transcript`. String, number, and boolean results
-are converted to text. A failed configured path falls back to top-level
-`text`, then to any non-empty top-level string.
+The configured path uses standard JSONPath through `serde_json_path`, for example
+`$.results[0].alternatives[0].transcript`. The default is `$.text`; legacy paths
+without the root identifier are not supported. Configuration validation rejects
+empty or malformed paths before any request, and each ASR client reuses its parsed
+path. Queries must match exactly one node. String, number, and boolean results
+are converted to text; objects, arrays, and null are errors. An empty string is a
+successful extraction and produces no paste in GUI/hotkey mode.
+
+Invalid JSON responses, zero matches, multiple matches (with their count), and
+unsupported value types produce explicit errors without fallback or automatic
+upload retries. The original HTTP 200 response remains available for caching,
+even if it is not valid JSON. CLI file mode returns an error without writing the
+transcription file. See the README for selector examples and result semantics.
 
 ## HTTP and multipart
 

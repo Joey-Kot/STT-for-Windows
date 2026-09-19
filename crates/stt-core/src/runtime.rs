@@ -844,7 +844,7 @@ impl Runtime {
                     cache_attempt,
                     &wav_path,
                     &output_path,
-                    false,
+                    matches!(&error, AsrError::TextExtraction { .. }),
                     &raw,
                 );
                 if !self.is_stopped() {
@@ -951,7 +951,13 @@ pub async fn run_file_mode_with_cancellation(
         Ok(transcription) => transcription,
         Err(error) => {
             let raw = error.last_response().to_vec();
-            cache::handle_cache(&config, None, Some(&temporary), false, &raw);
+            cache::handle_cache(
+                &config,
+                None,
+                Some(&temporary),
+                matches!(&error, AsrError::TextExtraction { .. }),
+                &raw,
+            );
             return Err(error.into());
         }
     };
