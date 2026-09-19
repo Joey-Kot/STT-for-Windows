@@ -83,6 +83,17 @@ fn lookup(table: &'static [(&'static str, &'static str)], key: &str) -> Option<&
 }
 
 const ENGLISH: &[(&str, &str)] = &[
+    ("hotkey_press", "Press a shortcut…"),
+    (
+        "hotkey_help",
+        "Focus a shortcut field and press a key combination. Release all keys to confirm; click Save to apply. Tab moves between fields.",
+    ),
+    (
+        "hotkey_invalid",
+        "Not recorded: use one allowed key, optionally with Ctrl, Shift or Alt. Release all keys and try again.",
+    ),
+    ("hotkey_duplicate", "Shortcut conflicts with"),
+    ("hotkey_capture_failed", "Unable to capture shortcuts"),
     ("audio_custom", "Custom…"),
     ("audio_current", "Current value"),
     ("audio_mono", "Mono"),
@@ -183,6 +194,17 @@ const ENGLISH: &[(&str, &str)] = &[
 ];
 
 const CHINESE: &[(&str, &str)] = &[
+    ("hotkey_press", "请按下快捷键…"),
+    (
+        "hotkey_help",
+        "选中快捷键输入框后直接按下组合，松开全部按键确认，点击保存生效。Tab 可切换输入框。",
+    ),
+    (
+        "hotkey_invalid",
+        "未录入：请使用一个允许的按键，可搭配 Ctrl、Shift、Alt。松开全部按键后重试。",
+    ),
+    ("hotkey_duplicate", "快捷键冲突"),
+    ("hotkey_capture_failed", "无法捕获快捷键"),
     ("audio_custom", "自定义…"),
     ("audio_current", "当前值"),
     ("audio_mono", "单声道"),

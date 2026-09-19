@@ -23,6 +23,7 @@ The current implementation is built with Rust, Win32, Direct2D, and DirectWrite.
   - Start or stop recording, pause or resume recording, and cancel a recording or an in-flight transcription request.
   - When idle with a retryable recording, the Cancel or Retry hotkey resubmits that recording.
   - Uses a low-level keyboard hook by default, with `RegisterHotKey` available as an alternative.
+  - Record shortcuts directly in the three GUI hotkey fields by pressing the desired combination.
 - **General-purpose ASR HTTP interface**
   - Uploads audio through `multipart/form-data` with a fixed file field named `file`.
   - Supports Bearer tokens, model, language, prompt, and custom form fields.
@@ -372,7 +373,7 @@ The updated codec list includes Speex, AMR-WB, WavPack, WMA v1/v2, signed 8-bit 
 
 ### Exit
 
-- Pressing `Esc` in a microphone or audio-output list closes that list first. In an audio custom input it leaves custom editing; otherwise it closes the settings window, or starts the exit flow if settings are not open.
+- In a hotkey field, `Esc` is recorded as a shortcut instead of closing the window. In a microphone or audio-output list it closes that list first; in an audio custom input it leaves custom editing. Otherwise it closes the settings window, or starts the exit flow if settings are not open.
 - Exiting while recording, paused, or uploading displays a confirmation dialog.
 - Exiting cancels recording and the active request, removes the tray icon, and stops the hotkey thread.
 
@@ -814,7 +815,22 @@ In a JSON configuration, write `"TEXT_PATH": "$.segments[?@.id == 42].text"`. In
 | Pause/resume recording | `ctrl+alt+s` |
 | Cancel recording/transcription request, or retry the latest completed recording when idle | `alt+esc` |
 
-Supported modifier aliases:
+### Recording shortcuts in the GUI
+
+On **Hotkeys**, focus Start key, Pause key, or Cancel or Retry Key, then press the desired combination. The field previews it as, for example, `Ctrl + Alt + S`. Release all keys to confirm the draft; press another combination to replace it. **Save** writes and applies the settings; **Cancel** discards the draft. Leaving the field or switching away from the window before releasing all keys discards the unfinished combination and keeps the previous value.
+
+- Only `Ctrl`, `Shift`, and `Alt` are modifiers; left and right variants are equivalent. A shortcut requires one other key, with zero or more modifiers. Modifier-only combinations and multiple ordinary keys are rejected.
+- Function keys `F1`–`F24`, letters, digits, symbols, `Space`, `Esc`, and the remaining reported keyboard keys can be recorded. Main-keyboard digits and numeric-keypad digits are distinct.
+- Excluded keys: `Fn`, the context-menu key, Windows logo keys, `Tab`, `Backspace`, `Home`, `End`, `Num Lock`, `Insert`, `Delete`, `Print Screen`, `Scroll Lock`, `Pause`, `Enter`, `Caps Lock`, `Page Up`, `Page Down`, and all four arrows. Adding modifiers does not make these valid. `Fn` itself is not exposed as a standard Windows virtual key; firmware-translated keys are seen as the resulting key.
+- `Tab` and `Shift + Tab` move focus. `Backspace` does not clear a binding; type another shortcut to replace it. Text pasting is disabled. Release keys held while entering a field before recording a new combination.
+- Duplicate bindings show the conflicting actions and prevent saving. Invalid combinations do not replace the last value.
+- Application hotkey actions are suppressed during capture, including when the normal low-level hook option is off. `Esc` and `Alt + Esc` are captured by the field. After leaving it, intercepted keys are drained until released before normal hotkey actions resume.
+
+Existing JSON/CLI bindings remain readable, including keys excluded from new GUI recording. Unedited values retain their original spelling. Recording success does not guarantee global registration: a conflicting or reserved shortcut can still fail when settings are applied.
+
+### JSON and CLI syntax
+
+Supported modifier aliases in configuration files and CLI arguments:
 
 - `alt`, `menu`
 - `ctrl`, `control`
@@ -824,6 +840,8 @@ Supported modifier aliases:
 Supported keys include letters, digits, `F1`–`F24`, arrow keys, `Esc`, `Space`, `Enter`, `Tab`, `Backspace`, `Insert`, `Delete`, `Home`, `End`, `PageUp`, `PageDown`, and numeric keypad aliases.
 
 Hotkeys are case-insensitive. Repeated modifiers, unknown keys, and equivalent duplicate bindings across the three actions are rejected.
+
+GUI recordings use the existing string fields with a fixed modifier order (`ctrl`, `shift`, `alt`). Symbol keys use tokens such as `semicolon`, `equals`, `hyphen`, `slash`, and `quote`; `shift+equals` represents the main-keyboard plus combination on a US layout, while `add` is numeric-keypad plus. `multiply`, `divide`, `decimal`, and `separator` identify the other keypad operations. Additional keys can use `vk_XX`, where `XX` is a hexadecimal Windows virtual-key code. Bindings store virtual keys rather than input-method text; symbol labels follow US key names, and keyboard layouts may have different legends.
 
 When `HOTKEY_HOOK=true`, the low-level keyboard hook:
 
@@ -904,6 +922,8 @@ cargo test -p stt-gui --features native-gui,static-libav \
 ```
 
 The test requires the menu's output encoders and muxers. `STT_PRESET_CODECS` can restrict its codec matrix for a smaller host build; the default Opus and PCM 16/24/32 checks still run. Windows rendering, focus, scrolling, and Save/Cancel interactions require a Windows desktop check.
+
+Hotkey recorder coverage and the pending Windows keyboard/focus checklist are documented in [Hotkey recording validation](docs/hotkey-recording-validation.md).
 
 ### Build native dependencies and programs
 

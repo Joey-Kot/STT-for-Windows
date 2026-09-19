@@ -54,12 +54,16 @@ mod audio;
 mod dropdown;
 #[path = "dropdown_scrollbar.rs"]
 mod dropdown_scrollbar;
+mod hotkeys;
 mod microphone;
 use microphone::{
     ID_MICROPHONE, ID_MICROPHONE_LIST, MICROPHONE_TIMER, MicrophonePicker, WM_MICROPHONE_ACTION,
 };
 
 pub fn microphone_handles_escape(hwnd: HWND) -> bool {
+    if hotkeys::value(hwnd).is_some() {
+        return true;
+    }
     unsafe {
         let id = windows::Win32::UI::WindowsAndMessaging::GetDlgCtrlID(hwnd) as usize;
         id == ID_MICROPHONE_LIST
@@ -597,6 +601,7 @@ unsafe extern "system" fn settings_proc(
             }
             if id >= ID_PAGE_BASE && id < ID_PAGE_BASE + GROUPS.len() && notification == BN_CLICKED
             {
+                hotkeys::deactivate();
                 set_language_dropdown(state, false);
                 audio::close_all(state);
                 if let Some(picker) = &mut state.microphone {
@@ -865,6 +870,14 @@ unsafe extern "system" fn settings_proc(
             }
             LRESULT(0)
         }
+        windows::Win32::UI::WindowsAndMessaging::WM_ACTIVATE => {
+            if wparam.0 & 0xffff == 0 {
+                hotkeys::deactivate();
+            } else {
+                hotkeys::activate(unsafe { GetFocus() });
+            }
+            unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+        }
         WM_CLOSE => {
             if !state.saving {
                 unsafe {
@@ -874,6 +887,7 @@ unsafe extern "system" fn settings_proc(
             LRESULT(0)
         }
         WM_DESTROY => {
+            hotkeys::deactivate();
             unsafe {
                 let _ = windows::Win32::UI::WindowsAndMessaging::KillTimer(
                     Some(hwnd),
@@ -1049,6 +1063,24 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
         .insert(picker.button.0 as usize, "Audio");
     state.microphone = Some(picker);
     group_y.insert("Audio", FIELD_TOP + 42);
+    let hotkey_status = create_child(
+        state,
+        w!("STATIC"),
+        state.language.text("hotkey_help"),
+        WS_CHILD | WS_VISIBLE,
+        CONTENT_LEFT,
+        FIELD_TOP + 7 * 42,
+        EDIT_LEFT + EDIT_WIDTH - CONTENT_LEFT,
+        72,
+        0,
+        instance,
+    )?;
+    state
+        .control_groups
+        .insert(hotkey_status.0 as usize, "Hotkeys");
+    state
+        .localized_controls
+        .push((hotkey_status, "hotkey_help"));
     for (index, field) in FIELDS.iter().enumerate() {
         let y = *group_y.entry(field.group).or_insert(FIELD_TOP);
         let label = create_label(
@@ -1126,6 +1158,9 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
                         instance,
                     )?;
                     apply_dark_theme(hwnd);
+                    if hotkeys::KEYS.contains(&field.key) {
+                        hotkeys::attach(hwnd, text, state.language, hotkey_status)?;
+                    }
                     unsafe {
                         let margin = platform::scale(7, state.dpi) as u32;
                         SendMessageW(
@@ -2122,6 +2157,11 @@ fn select_language(state: &mut SettingsState, index: usize) {
     language.save();
     set_language_dropdown(state, false);
     refresh_language(state);
+    for key in hotkeys::KEYS {
+        if let Some(hwnd) = state.controls.get(key) {
+            hotkeys::set_language(*hwnd, language);
+        }
+    }
     audio::refresh(state);
     if let Some(picker) = &mut state.microphone {
         picker.rebuild(state.language, state.dpi);
@@ -2288,6 +2328,26 @@ fn save(state: &mut SettingsState) {
             return;
         }
     };
+    if let Err(stt_core::hotkey::HotkeyError::DuplicateBinding {
+        name,
+        previous_name,
+        ..
+    }) = stt_core::hotkey::validate_bindings(
+        &config.start_key,
+        &config.pause_key,
+        &config.cancel_or_retry_key,
+    ) {
+        show_error(
+            state.hwnd,
+            &format!(
+                "{}: {} / {}",
+                state.language.text("hotkey_duplicate"),
+                state.language.text(name),
+                state.language.text(previous_name)
+            ),
+        );
+        return;
+    }
     if let Err(error) = config.validate() {
         show_error(state.hwnd, &error.to_string());
         return;
@@ -2353,6 +2413,10 @@ fn read_config(state: &SettingsState) -> Result<Config, String> {
     let audio = audio::draft(state);
     for field in FIELDS {
         let hwnd = state.controls[field.key];
+        if let Some(text) = hotkeys::value(hwnd) {
+            object.insert(field.key.into(), serde_json::Value::String(text));
+            continue;
+        }
         if let Some(index) = crate::audio_options::KEYS
             .iter()
             .position(|key| *key == field.key)

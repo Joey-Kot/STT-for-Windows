@@ -8,6 +8,21 @@ const MOD_CTRL: u32 = 0x0002;
 const MOD_SHIFT: u32 = 0x0004;
 const MOD_WIN: u32 = 0x0008;
 
+pub mod capture;
+
+static CAPTURE_ACTIVE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+/// Suppress application actions while the GUI owns keyboard input, including
+/// releases drained after focus leaves the recorder.
+pub fn set_capture_active(active: bool) {
+    CAPTURE_ACTIVE.store(active, std::sync::atomic::Ordering::Release);
+}
+
+#[cfg(windows)]
+fn capture_active() -> bool {
+    CAPTURE_ACTIVE.load(std::sync::atomic::Ordering::Acquire)
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub struct ParsedHotkey {
     pub modifiers: u32,
@@ -116,6 +131,16 @@ pub fn parse_hotkey(spec: &str) -> Result<ParsedHotkey, HotkeyError> {
 }
 
 fn key_to_virtual_key(key: &str) -> Result<u32, HotkeyError> {
+    if let Some(value) = key
+        .strip_prefix("vk_")
+        .and_then(|value| u32::from_str_radix(value, 16).ok())
+        .filter(|value| (1..=254).contains(value))
+    {
+        return Ok(value);
+    }
+    if let Some(value) = capture::named_key(key) {
+        return Ok(value);
+    }
     let bytes = key.as_bytes();
     if bytes.len() == 1 {
         let byte = bytes[0];

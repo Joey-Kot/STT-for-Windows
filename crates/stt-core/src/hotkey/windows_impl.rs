@@ -77,7 +77,7 @@ fn start_registered_hotkeys(
                 if result.0 <= 0 {
                     break;
                 }
-                if message.message == WM_HOTKEY {
+                if message.message == WM_HOTKEY && !super::capture_active() {
                     if debug {
                         eprintln!("[hotkey-debug] WM_HOTKEY received id={}", message.wParam.0);
                     }
@@ -129,6 +129,10 @@ unsafe extern "system" fn keyboard_hook(code: i32, wparam: WPARAM, lparam: LPARA
         return unsafe { CallNextHookEx(None, code, wparam, lparam) };
     }
     let state = unsafe { &mut *state };
+    if super::capture_active() {
+        state.swallowed.clear();
+        return unsafe { CallNextHookEx(None, code, wparam, lparam) };
+    }
     if message == WM_KEYDOWN || message == WM_SYSKEYDOWN {
         if state.swallowed.contains_key(&virtual_key) {
             return LRESULT(1);
