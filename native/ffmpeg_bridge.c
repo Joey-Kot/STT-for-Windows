@@ -5,10 +5,12 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 
 #include <libavcodec/avcodec.h>
 #include <libavformat/avformat.h>
 #include <libavutil/audio_fifo.h>
+#include <libavutil/avstring.h>
 #include <libavutil/channel_layout.h>
 #include <libavutil/error.h>
 #include <libavutil/frame.h>
@@ -467,7 +469,26 @@ int stt_ffmpeg_convert(
         enc_ctx->sample_fmt = AV_SAMPLE_FMT_S16;
         av_channel_layout_default(&enc_ctx->ch_layout, 1);
     } else {
-        ret = avformat_alloc_output_context2(&ofmt_ctx, NULL, NULL, out_path);
+        // Raw PCM muxers have no matching conventional filename extension.
+        // Use their runtime format names only for the explicit raw extensions.
+        const char *output_format = NULL;
+        const char *extension = strrchr(out_path, '.');
+        static const char *const raw_formats[] = {
+            "s8", "s16le", "s16be", "s24le", "s24be", "s32le", "s32be",
+            "f32le", "f32be", "f64le", "f64be", "alaw", "mulaw"
+        };
+        if (extension != NULL) {
+            if (av_strcasecmp(extension + 1, "mka") == 0) {
+                output_format = "matroska";
+            }
+            for (size_t i = 0; i < sizeof(raw_formats) / sizeof(raw_formats[0]); i++) {
+                if (av_strcasecmp(extension + 1, raw_formats[i]) == 0) {
+                    output_format = raw_formats[i];
+                    break;
+                }
+            }
+        }
+        ret = avformat_alloc_output_context2(&ofmt_ctx, NULL, output_format, out_path);
         if (ret < 0 || ofmt_ctx == NULL) {
             if (ret >= 0) ret = AVERROR(ENOMEM);
             stt_set_av_error(errbuf, errbuf_size, "could not create output container", ret);

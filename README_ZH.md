@@ -318,11 +318,22 @@ stateDiagram-v2
 
 Audio 第一项为“麦克风”，采用与 Display language 一致的下拉样式。第一项选项为“跟随系统默认”。打开设置或展开下拉列表时，会在后台刷新当前可用的录音输入设备；设备较多或名称较长时可以滚动查看。选择后保存，从下一次录音生效；取消设置则放弃本次选择。已选设备离线时保留选择并标记“设备不可用”，开始录音时报告错误，不会悄悄换用其他麦克风。同名设备通过设备标识区分。
 
-Display language 和麦克风下拉列表共用带内边距的圆角面板，沿用深色与青绿色配色，选中项和悬停项通过不同底色区分。
+Display language、麦克风和六个音频输出下拉列表共用带内边距的圆角面板，沿用深色与青绿色配色，选中项和悬停项通过不同底色区分。音频列表最多显示六行，超出后滚动；下方空间不足时向上展开。
+
+输出声道数、位深度、采样率、码率、编码和容器均可通过预设选择。新配置默认为 **1 声道、16 位深度偏好、16000 Hz、128 kbps、Opus 编码和 `opus` 容器**。已有配置中的明确值保留，缺失字段使用新默认值。
+
+- 声道数提供单声道和双声道，AMR-NB/WB 仅提供单声道。已有的非预设值（例如 6 声道）仍会显示并保留，除非主动修改，或与新选择的编码不兼容。
+- 采样率预设覆盖 7350～192000 Hz，包含 8000、11025、12000、16000、22050、24000、32000、44100、48000、64000、88200、96000、176400 Hz 等档位。码率预设覆盖 6～640 kbps，并包含特定编码使用的中间档位。两者按编码筛选，码率还会根据采样率和声道数筛选。选择“自定义…”后，可在原位置输入整数；沿用现有配置校验，实际转码仍受编码器限制。
+- 编码和容器选项以当前内嵌输出实现为准，不直接照抄较宽的配置白名单。选择编码、采样率或声道数后，会更新关联选项；不兼容的值优先使用可用的默认值，否则使用第一个兼容选项，保存前会显示调整后的结果。例如，Opus 不提供 44100 Hz，低于 16000 Hz 的 MP3 不提供 MP4 容器。AMR-NB/WB 会选择最接近配置中整数 kbps 值的编码模式。MP3 仅在 11025、22050、44100、48000 Hz 时提供 FLV；Speex 提供 8000、16000、32000 Hz，AMR-WB 固定为 16000 Hz。
+- “PCM”提供 16、24、32 位整数输出。选择位深度时，GUI 同时写入对应的 `pcm_s16le`、`pcm_s24le` 或 `pcm_s32le` 编码及位深度字段。固定位深度的 PCM 变体会显示编码决定的实际位深度。其他编码的位深度选择器置灰并说明原因，不使用码率的编码会将码率项置灰；置灰不会清空原配置值。有符号 8 位 PCM 作为独立编码选项，支持 AIFF 或裸 `s8` 输出；A-law、μ-law 也作为独立编码选项，支持 WAV 或各自的裸流格式。已有的位深度偏好仍会保留。
+
+这些预设和参数映射仅在 GUI 中实现。点击“保存”才写入现有 JSON 字段，“取消”放弃本次草稿。打开设置或仅修改无关项再保存，不会自动归一化非预设音频值或编码别名。core 补充这些选项所需的编码、容器名称及别名，原有数值参数范围和别名继续受支持。共享转换器增加裸 PCM 格式与 `.mka` 输出的显式识别；预设筛选及关联选项调整仍只在 GUI 中进行。
+
+编码列表新增 Speex、AMR-WB、WavPack、WMA v1/v2、有符号 8 位 PCM、A-law 和 μ-law。容器按编码提供兼容的 MOV、Matroska（`mkv`/`mka`）、AVI、FLV、MPEG-PS、AIFF、ASF/WMA、AMR、SPX、WavPack，以及与所选 PCM 编码匹配的裸流格式。同一格式的等价扩展名使用一个代表选项，例如 `aiff`、`mpeg`。不提供 AC-4 或视频编码预设。`pcm_s64be` 尚未确认可用的输出容器，因此不加入 GUI；`pcm_s64le` 提供 WAV。
 
 ### 退出
 
-- 焦点在麦克风列表中时，按 `Esc` 先收起列表；否则优先关闭设置窗口，设置窗口未打开时进入退出流程。
+- 焦点在麦克风或音频输出列表中时，按 `Esc` 先收起列表；在音频自定义输入框中则退出自定义编辑。其他情况下优先关闭设置窗口，设置窗口未打开时进入退出流程。
 - 录音、暂停或上传期间退出会显示确认对话框。
 - 退出会取消录音和当前请求、移除托盘图标并停止快捷键线程。
 
@@ -588,9 +599,9 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
 | `CHANNELS` | `1` | 允许 1–8；只控制最终上传音频的声道数 |
 | `SAMPLING_RATE` | `16000` | 最终上传采样率，必须大于 0，单位 Hz |
 | `SAMPLING_RATE_DEPTH` | `16` | 允许 8、16、24、32；输出位深偏好，受编码器支持范围约束，与采集格式无关 |
-| `BIT_RATE` | `32` | 必须大于 0，单位 kbps |
+| `BIT_RATE` | `128` | 必须大于 0，单位 kbps |
 | `CODECS` | `"opus"` | 编码器名称或兼容别名，大小写不敏感 |
-| `CONTAINER` | `"ogg"` | 输出容器/扩展名，大小写不敏感 |
+| `CONTAINER` | `"opus"` | 输出容器/扩展名，大小写不敏感 |
 
 共享静态构建覆盖的常用输出包括 Opus/Ogg、MP3、AAC、FLAC、Vorbis 和 WAV/PCM。构建中还包含部分其他编码器与封装器；编码器和容器必须是有效组合。
 
@@ -809,12 +820,21 @@ rustup component add rustfmt clippy
 
 ```bash
 cargo fmt --all --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --features stt-gui/native-gui
+cargo clippy --workspace --all-targets --features stt-gui/native-gui -- -D warnings
 cargo check --workspace \
   --target x86_64-pc-windows-gnu \
   --features stt-gui/native-gui
 ```
+
+GUI 的可选内嵌预设测试会执行实际转码组合，并检查默认 Opus 文件头和 PCM 位深度。通过 `PKG_CONFIG_PATH` 指定匹配的本机 libav 构建后执行：
+
+```bash
+cargo test -p stt-gui --features native-gui,static-libav \
+  embedded_presets_encode -- --ignored --nocapture
+```
+
+测试需要菜单中对应的输出编码器和封装器。对于裁剪更小的本机测试构建，可用 `STT_PRESET_CODECS` 限定编码测试范围；默认 Opus 和 PCM 16/24/32 位检查仍会执行。Windows 绘制、焦点、滚动及保存/取消交互仍需在 Windows 桌面验证。
 
 ### 构建原生依赖与程序
 
@@ -833,7 +853,13 @@ dist/stt-cli-windows-amd64.zip
 dist/stt-gui-windows-amd64.zip
 ```
 
-采集直接使用 Windows 系统 WASAPI 接口，无需构建或链接 PortAudio。`scripts/build-ffmpeg-windows-amd64.sh` 使用 `--disable-everything` 后启用 file 协议；wav/mp3/flac/ogg/mov/aac/matroska/wv/ac3/eac3 解封装器；对应的 PCM、MP3/MP2、FLAC、Opus、Vorbis、AAC、ALAC、WavPack、AC3/EAC3 解码器与解析器；以及原有输出编码器和封装器。禁用 libavfilter。两个程序均启用共享的 `stt-core/static-libav` 功能，Earshot 固定为 1.2.2。
+采集直接使用 Windows 系统 WASAPI 接口，无需构建或链接 PortAudio。`scripts/build-ffmpeg-windows-amd64.sh` 下载 FFmpeg 8.1 官方源码包，解压前校验 SHA-256 `b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a`。源码放在带版本号的目录中，避免复用旧 Git 源码；Linux 内嵌音频测试也使用此源码包。
+
+Opus 1.5.2 和 LAME 3.100 源码包也会在解压前校验固定的 SHA-256，已缓存的下载同样需要通过校验。校验值记录在构建脚本和第三方组件说明中。
+
+裁剪构建启用文件读写，以及 PCM（含 A-law/μ-law）、WAV、MP3、Opus、Speex、AAC、AMR-NB/WB、AVI、FLAC、FLV、M4A、MKV、MOV、MP4、MPEG、Ogg、WebM、ASF（WMA）、AIFF 和 WavPack 所需的编解码器、解析器与封装器。Speex 使用 `libspeex`，AMR-WB 使用 `libvo_amrwbenc`。FLV 保留 AAC/MP3 音频支持，移除 FLV1、H.264 编解码器。启用 WMA v1/v2 编解码，移除 Theora 和 WMV 视频编解码器；本构建不包含 WMA Pro、WMA Lossless、WMV3、VC-1。
+
+构建组件名称与扩展名不同：裸 PCM 封装器使用 `pcm_*`；Speex 使用 `spx`（Ogg），M4A 使用 `ipod`，MKV 使用 `matroska`，MPEG 使用 `mpeg1system`，WMA 使用 `asf`。脚本会逐项检查所请求的组件是否实际启用，缺少任何一项就停止构建。这些是库的能力；应用配置白名单、GUI 预设及仅处理音频的转换流程另行管理。禁用 libavfilter。两个程序均启用 `stt-core/static-libav`，Earshot 固定为 1.2.2。
 
 GitHub Actions 还会检查：
 
@@ -847,6 +873,54 @@ GitHub Actions 还会检查：
 - `NOTICE` 与 `THIRD_PARTY_LICENSES/` 必须完整。
 
 构建通过后，工作流会更新 `Latest` 标签和 Release，并上传 GUI、CLI 及其 SHA-256 文件。
+
+### 内嵌 FFmpeg 支持的容器与编码
+
+| 容器 / 格式 | 常用扩展名 | 编译时的封装器名称 |
+|---|---|---|
+| WAV | `wav` | `wav` |
+| MP3 | `mp3` | `mp3` |
+| Opus / Ogg | `opus`, `ogg` | `opus`, `ogg` |
+| Speex / Ogg | `spx` | `spx` |
+| AAC / ADTS | `aac` | `adts` |
+| AMR-NB / AMR-WB | `amr` | `amr` |
+| AVI | `avi` | `avi` |
+| FLAC | `flac` | `flac` |
+| FLV | `flv` | `flv` |
+| M4A | `m4a` | `ipod` |
+| Matroska | `mkv`, `mka` | `matroska` |
+| QuickTime | `mov` | `mov` |
+| MP4 | `mp4` | `mp4` |
+| MPEG-PS | `mpg`, `mpeg` | `mpeg1system` |
+| WebM | `webm` | `webm` |
+| ASF / WMA | `asf`, `wma` | `asf` |
+| AIFF / AIFF-C | `aif`, `aiff`, `afc`, `aifc` | `aiff` |
+| WavPack | `wv` | `wv` |
+| AC-3 / E-AC-3 | `ac3`, `eac3` | `ac3`, `eac3` |
+| 裸整数 PCM | 无统一扩展名，需明确样本格式 | `pcm_s8`, `pcm_s16le`, `pcm_s16be`, `pcm_s24le`, `pcm_s24be`, `pcm_s32le`, `pcm_s32be` |
+| 裸浮点 PCM | 无统一扩展名，需明确样本格式 | `pcm_f32le`, `pcm_f32be`, `pcm_f64le`, `pcm_f64be` |
+| 裸 A-law / μ-law | 无统一扩展名，需明确样本格式 | `pcm_alaw`, `pcm_mulaw` |
+
+| 编码格式 | 启用的 FFmpeg 编码器 |
+|---|---|
+| Opus | `libopus` |
+| MP3 | `libmp3lame` |
+| MP2 | `mp2` |
+| AAC | `aac` |
+| Vorbis | `libvorbis` |
+| Speex | `libspeex` |
+| AMR-NB | `libopencore_amrnb` |
+| AMR-WB | `libvo_amrwbenc` |
+| FLAC / ALAC / WavPack | `flac`, `alac`, `wavpack` |
+| AC-3 / E-AC-3 | `ac3`, `eac3` |
+| WMA v1 / v2 | `wmav1`, `wmav2` |
+| ADPCM-MS | `adpcm_ms` |
+| 8 位整数 PCM | `pcm_s8` |
+| 16 / 24 / 32 / 64 位整数 PCM | `pcm_s16le`, `pcm_s16be`, `pcm_s24le`, `pcm_s24be`, `pcm_s32le`, `pcm_s32be`, `pcm_s64le`, `pcm_s64be` |
+| 32 / 64 位浮点 PCM | `pcm_f32le`, `pcm_f32be`, `pcm_f64le`, `pcm_f64be` |
+| PCM A-law / μ-law | `pcm_alaw`, `pcm_mulaw` |
+
+FFmpeg 8.1 没有专用 64 位整数 PCM 裸流封装器；PCM 编码器是独立组件，例如 `pcm_s64le` 可以写入 WAV。实际输出还受采样率、声道数、码率及容器规则限制。
 
 ## 安全与隐私
 
@@ -893,12 +967,14 @@ GitHub Actions 还会检查：
 
 两个发布包均静态链接：
 
-- FFmpeg/libav n7.1.1
+- FFmpeg/libav 8.1
 - Opus v1.5.2
 - LAME 3.100
 - libogg 1.3.5
 - libvorbis 1.3.7
 - OpenCore AMR 0.1.6
+- Speex 1.2.1
+- vo-amrwbenc 0.1.3
 
 摘要见 [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt)，完整文本位于 [THIRD_PARTY_LICENSES/](THIRD_PARTY_LICENSES/)。
 

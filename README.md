@@ -318,11 +318,22 @@ Settings can be saved only in the `Idle` or `Error` state. When settings are sav
 
 The first Audio option is **Microphone**, styled like the Display language dropdown. Its first choice is **Follow system default**. Opening settings or the dropdown refreshes active recording inputs in the background; long lists and names can be scrolled. Choose a microphone and save to apply it to the next recording; Cancel discards the selection. An offline selection remains visible as **Device unavailable** and causes an error at recording start instead of silently switching microphones. Endpoint IDs distinguish devices with identical names.
 
-The Display language and Microphone dropdowns share a single rounded panel with padding, using the app's dark and teal palette. Selected and hovered options have distinct background colors.
+The Display language, Microphone, and six audio-output dropdowns share a rounded panel with padding, using the app's dark and teal palette. Selected and hovered options have distinct background colors. Audio lists show up to six rows with scrolling and open upward when there is insufficient room below.
+
+Output channels, sample depth, sample rate, bitrate, codec, and container are selected from presets. New configurations default to **1 channel, 16-bit depth preference, 16000 Hz, 128 kbps, Opus codec, and `opus` container**. Existing explicit values are retained; missing fields receive the new defaults.
+
+- Channels offer mono and stereo, or mono only for AMR-NB/WB. Existing non-preset values, such as 6 channels, remain visible and are preserved unless explicitly changed or incompatible with a newly selected codec.
+- Sample-rate presets span 7350–192000 Hz, including 8000, 11025, 12000, 16000, 22050, 24000, 32000, 44100, 48000, 64000, 88200, 96000, and 176400 Hz. Bitrate presets span 6–640 kbps and include intermediate codec-specific steps. Both menus filter their presets by codec; bitrate also depends on rate and channels. **Custom…** opens an integer input in the same field. Custom values use the existing configuration validation; encoder limitations still apply.
+- Codec/container choices follow the embedded output implementation, rather than the broader configuration whitelist. Choosing a codec, rate, or channel count updates dependent choices; incompatible values use the applicable default if available, otherwise the first compatible option. The resulting values are shown before Save. For example, Opus excludes 44100 Hz, and MP3 excludes MP4 below 16000 Hz. AMR-NB/WB select the nearest encoding mode to the configured integer kbps value. MP3 offers FLV only at 11025, 22050, 44100 or 48000 Hz. Speex offers 8000, 16000 and 32000 Hz; AMR-WB uses 16000 Hz.
+- **PCM** offers 16, 24, and 32-bit integer output. Choosing its depth writes the corresponding `pcm_s16le`, `pcm_s24le`, or `pcm_s32le` codec and depth field. Fixed PCM variants display the depth dictated by their codec. Other codecs disable the depth selector with an explanation; codecs without a bitrate setting disable bitrate. Disabled fields retain their stored values. Signed 8-bit PCM is a separate codec choice for AIFF or raw `s8` output. A-law and μ-law are also separate codec choices for WAV or their raw formats. Existing depth preferences remain preserved.
+
+These presets and parameter mappings belong to the GUI only. They write the existing JSON fields on **Save**, and **Cancel** discards the draft. Opening settings or saving an unrelated change does not normalize non-preset audio values or codec aliases. Core accepts the additional codec/container names and aliases needed by these choices; its numeric parameter ranges and existing aliases remain supported. The shared converter explicitly resolves raw PCM formats and `.mka` output. Preset filtering and dependent selections remain GUI-only.
+
+The updated codec list includes Speex, AMR-WB, WavPack, WMA v1/v2, signed 8-bit PCM, A-law and μ-law. Container choices now cover the applicable MOV, Matroska (`mkv`/`mka`), AVI, FLV, MPEG-PS, AIFF, ASF/WMA, AMR, SPX and WavPack outputs, plus raw PCM formats matching the selected codec. Equivalent extensions use one representative choice (for example `aiff` and `mpeg`). No AC-4 or video codec presets are offered. `pcm_s64be` remains absent from the GUI because no compatible output container has been established for it; `pcm_s64le` offers WAV.
 
 ### Exit
 
-- Pressing `Esc` in the microphone list closes that list first; otherwise it closes the settings window, or starts the exit flow if settings are not open.
+- Pressing `Esc` in a microphone or audio-output list closes that list first. In an audio custom input it leaves custom editing; otherwise it closes the settings window, or starts the exit flow if settings are not open.
 - Exiting while recording, paused, or uploading displays a confirmation dialog.
 - Exiting cancels recording and the active request, removes the tray icon, and stops the hotkey thread.
 
@@ -588,9 +599,9 @@ This is only a protocol example. The actual model name, fields, supported audio 
 | `CHANNELS` | `1` | Allowed range: 1–8; final upload channels only |
 | `SAMPLING_RATE` | `16000` | Final upload sample rate, greater than 0, in Hz |
 | `SAMPLING_RATE_DEPTH` | `16` | Allowed values: 8, 16, 24, or 32; output sample-depth preference subject to encoder support, independent of capture |
-| `BIT_RATE` | `32` | Must be greater than 0, in kbps |
+| `BIT_RATE` | `128` | Must be greater than 0, in kbps |
 | `CODECS` | `"opus"` | Encoder name or compatible alias, case-insensitive |
-| `CONTAINER` | `"ogg"` | Output container/extension, case-insensitive |
+| `CONTAINER` | `"opus"` | Output container/extension, case-insensitive |
 
 Common outputs covered by the shared static build include Opus/Ogg, MP3, AAC, FLAC, Vorbis, and WAV/PCM. The build also includes several additional encoders and muxers; the selected codec and container must form a valid combination.
 
@@ -809,12 +820,21 @@ rustup component add rustfmt clippy
 
 ```bash
 cargo fmt --all --check
-cargo test --workspace
-cargo clippy --workspace --all-targets -- -D warnings
+cargo test --workspace --features stt-gui/native-gui
+cargo clippy --workspace --all-targets --features stt-gui/native-gui -- -D warnings
 cargo check --workspace \
   --target x86_64-pc-windows-gnu \
   --features stt-gui/native-gui
 ```
+
+The GUI's optional embedded preset test also exercises real output combinations and checks default Opus headers and PCM depth. With a matching host libav build available through `PKG_CONFIG_PATH`, run:
+
+```bash
+cargo test -p stt-gui --features native-gui,static-libav \
+  embedded_presets_encode -- --ignored --nocapture
+```
+
+The test requires the menu's output encoders and muxers. `STT_PRESET_CODECS` can restrict its codec matrix for a smaller host build; the default Opus and PCM 16/24/32 checks still run. Windows rendering, focus, scrolling, and Save/Cancel interactions require a Windows desktop check.
 
 ### Build native dependencies and programs
 
@@ -833,7 +853,13 @@ dist/stt-cli-windows-amd64.zip
 dist/stt-gui-windows-amd64.zip
 ```
 
-Capture uses Windows system WASAPI APIs and requires no PortAudio build or library. After using `--disable-everything`, `scripts/build-ffmpeg-windows-amd64.sh` enables file protocol; wav/mp3/flac/ogg/mov/aac/matroska/wv/ac3/eac3 demuxers; corresponding PCM, MP3/MP2, FLAC, Opus, Vorbis, AAC, ALAC, WavPack, AC3/EAC3 decoders and parsers; and the existing output encoders/muxers. libavfilter is disabled. Both programs enable the shared `stt-core/static-libav` feature. Earshot is pinned to 1.2.2.
+Capture uses Windows system WASAPI APIs and requires no PortAudio build or library. `scripts/build-ffmpeg-windows-amd64.sh` downloads the official FFmpeg 8.1 source archive and checks SHA-256 `b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a` before extraction. The versioned source directory avoids reusing the old Git checkout. The Linux embedded-audio test also uses this archive.
+
+Opus 1.5.2 and LAME 3.100 archives are also checked against pinned SHA-256 values before extraction, including cached downloads. The hashes are recorded in the build script and third-party notices.
+
+The trimmed build enables file I/O and the encoders, decoders, parsers and muxers for PCM (including A-law/μ-law), WAV, MP3, Opus, Speex, AAC, AMR-NB/WB, AVI, FLAC, FLV, M4A, MKV, MOV, MP4, MPEG, Ogg, WebM, ASF (WMA), AIFF and WavPack. Speex uses `libspeex`, AMR-WB uses `libvo_amrwbenc`. FLV retains AAC/MP3 audio support; FLV1 and H.264 codecs are excluded. WMA v1/v2 encoding and decoding are enabled; Theora and WMV video codecs are excluded. WMA Pro, WMA Lossless, WMV3 and VC-1 are excluded from this build.
+
+Configure names differ from extensions: raw PCM muxers use `pcm_*`; Speex uses `spx` (Ogg), M4A uses `ipod`, MKV uses `matroska`, MPEG uses `mpeg1system`, and WMA uses `asf`. The script checks that every requested component was enabled and stops if one is missing. These are library capabilities; the application's configuration whitelist, GUI presets and audio-only conversion pipeline remain separate. libavfilter is disabled. Both programs enable `stt-core/static-libav`; Earshot is pinned to 1.2.2.
 
 GitHub Actions also verifies:
 
@@ -847,6 +873,54 @@ GitHub Actions also verifies:
 - `NOTICE` and `THIRD_PARTY_LICENSES/` are complete.
 
 After a successful build, the workflow updates the `Latest` tag and Release, then uploads the GUI, CLI, and their SHA-256 files.
+
+### Embedded FFmpeg containers and encoders
+
+| Container / format | Common extensions | Configure muxer name |
+|---|---|---|
+| WAV | `wav` | `wav` |
+| MP3 | `mp3` | `mp3` |
+| Opus / Ogg | `opus`, `ogg` | `opus`, `ogg` |
+| Speex / Ogg | `spx` | `spx` |
+| AAC / ADTS | `aac` | `adts` |
+| AMR-NB / AMR-WB | `amr` | `amr` |
+| AVI | `avi` | `avi` |
+| FLAC | `flac` | `flac` |
+| FLV | `flv` | `flv` |
+| M4A | `m4a` | `ipod` |
+| Matroska | `mkv`, `mka` | `matroska` |
+| QuickTime | `mov` | `mov` |
+| MP4 | `mp4` | `mp4` |
+| MPEG-PS | `mpg`, `mpeg` | `mpeg1system` |
+| WebM | `webm` | `webm` |
+| ASF / WMA | `asf`, `wma` | `asf` |
+| AIFF / AIFF-C | `aif`, `aiff`, `afc`, `aifc` | `aiff` |
+| WavPack | `wv` | `wv` |
+| AC-3 / E-AC-3 | `ac3`, `eac3` | `ac3`, `eac3` |
+| Raw signed PCM | No universal extension; specify the sample format | `pcm_s8`, `pcm_s16le`, `pcm_s16be`, `pcm_s24le`, `pcm_s24be`, `pcm_s32le`, `pcm_s32be` |
+| Raw floating-point PCM | No universal extension; specify the sample format | `pcm_f32le`, `pcm_f32be`, `pcm_f64le`, `pcm_f64be` |
+| Raw A-law / μ-law | No universal extension; specify the sample format | `pcm_alaw`, `pcm_mulaw` |
+
+| Encoding | Explicitly enabled FFmpeg encoder |
+|---|---|
+| Opus | `libopus` |
+| MP3 | `libmp3lame` |
+| MP2 | `mp2` |
+| AAC | `aac` |
+| Vorbis | `libvorbis` |
+| Speex | `libspeex` |
+| AMR-NB | `libopencore_amrnb` |
+| AMR-WB | `libvo_amrwbenc` |
+| FLAC / ALAC / WavPack | `flac`, `alac`, `wavpack` |
+| AC-3 / E-AC-3 | `ac3`, `eac3` |
+| WMA v1 / v2 | `wmav1`, `wmav2` |
+| ADPCM-MS | `adpcm_ms` |
+| PCM 8-bit | `pcm_s8` |
+| PCM 16 / 24 / 32 / 64-bit | `pcm_s16le`, `pcm_s16be`, `pcm_s24le`, `pcm_s24be`, `pcm_s32le`, `pcm_s32be`, `pcm_s64le`, `pcm_s64be` |
+| PCM float 32 / 64-bit | `pcm_f32le`, `pcm_f32be`, `pcm_f64le`, `pcm_f64be` |
+| PCM A-law / μ-law | `pcm_alaw`, `pcm_mulaw` |
+
+FFmpeg 8.1 has no dedicated raw 64-bit integer PCM muxers; its PCM encoders are separate components (for example, `pcm_s64le` can be stored in WAV). Valid output also depends on sample rate, channels, bitrate and container restrictions.
 
 ## Security and privacy
 
@@ -893,12 +967,14 @@ The [microphone selection validation record](docs/microphone-selection-validatio
 
 Both release packages statically link:
 
-- FFmpeg/libav n7.1.1
+- FFmpeg/libav 8.1
 - Opus v1.5.2
 - LAME 3.100
 - libogg 1.3.5
 - libvorbis 1.3.7
 - OpenCore AMR 0.1.6
+- Speex 1.2.1
+- vo-amrwbenc 0.1.3
 
 See [THIRD_PARTY_NOTICES.txt](THIRD_PARTY_NOTICES.txt) for a summary. Complete license texts are in [THIRD_PARTY_LICENSES/](THIRD_PARTY_LICENSES/).
 

@@ -3,9 +3,6 @@ use std::sync::mpsc::{self, Receiver};
 use stt_core::audio_devices::{InputDevice, list_input_devices};
 use windows::Win32::Foundation::SIZE;
 use windows::Win32::Graphics::Gdi::{GetDC, GetTextExtentPoint32W, ReleaseDC};
-use windows::Win32::Graphics::Gdi::{RDW_FRAME, RDW_INVALIDATE, RedrawWindow};
-use windows::Win32::UI::Controls::ShowScrollBar;
-use windows::Win32::UI::HiDpi::GetSystemMetricsForDpi;
 use windows::Win32::UI::Input::KeyboardAndMouse::{
     GetKeyState, SetFocus, VK_DOWN, VK_ESCAPE, VK_RETURN, VK_SHIFT, VK_SPACE, VK_TAB,
 };
@@ -29,6 +26,8 @@ pub(super) struct MicrophonePicker {
     pub button: HWND,
     pub list: HWND,
     panel: HWND,
+    vertical_scrollbar: HWND,
+    horizontal_scrollbar: HWND,
     pub open: bool,
     pub selected_id: String,
     pub selected_name: String,
@@ -65,8 +64,6 @@ impl MicrophonePicker {
             "",
             WINDOW_STYLE(
                 WS_CHILD.0
-                    | WS_VSCROLL.0
-                    | WS_HSCROLL.0
                     | LBS_NOTIFY as u32
                     | LBS_OWNERDRAWFIXED as u32
                     | LBS_HASSTRINGS as u32
@@ -95,11 +92,16 @@ impl MicrophonePicker {
                 Some(LPARAM(platform::scale(36, state.dpi) as isize)),
             );
         }
+        let vertical_scrollbar = dropdown_scrollbar::create(state, panel, list, instance)?;
+        let horizontal_scrollbar =
+            dropdown_scrollbar::create_horizontal(state, panel, list, instance)?;
         let config = state.runtime.config();
         let mut picker = Self {
             button,
             list,
             panel,
+            vertical_scrollbar,
+            horizontal_scrollbar,
             parent: state.hwnd,
             open: false,
             selected_id: config.input_device,
@@ -350,43 +352,46 @@ impl MicrophonePicker {
             - bounds.left
             - platform::scale(dropdown::PADDING * 2, dpi)
             - if vertical {
-                unsafe { GetSystemMetricsForDpi(SM_CXVSCROLL, dpi) }
+                dropdown_scrollbar::thickness(dpi)
             } else {
                 0
             };
         let horizontal = self.text_width > available;
         // Sum physical row heights, rather than rounding the combined logical height.
-        let height = self.rows.len().min(8) as i32 * platform::scale(dropdown::ROW_HEIGHT, dpi)
+        let list_height =
+            self.rows.len().min(8) as i32 * platform::scale(dropdown::ROW_HEIGHT, dpi);
+        let height = list_height
             + if horizontal {
-                unsafe { GetSystemMetricsForDpi(SM_CYHSCROLL, dpi) }
+                dropdown_scrollbar::thickness(dpi)
             } else {
                 0
             };
         let width = dropdown::position_pixels(self.panel, self.button, height, dpi);
+        let width = dropdown_scrollbar::position(
+            self.vertical_scrollbar,
+            width,
+            list_height,
+            dpi,
+            vertical,
+        );
+        dropdown_scrollbar::position_horizontal(
+            self.horizontal_scrollbar,
+            width,
+            list_height,
+            dpi,
+            self.text_width,
+        );
         unsafe {
-            // Drop old scrollbar state before sizing. Otherwise a stale vertical bar
-            // can induce a horizontal bar, which then keeps the vertical bar needed.
-            SendMessageW(self.list, LB_SETHORIZONTALEXTENT, Some(WPARAM(0)), None);
-            let _ = ShowScrollBar(self.list, SB_BOTH, false);
             let _ = SetWindowPos(
                 self.list,
                 Some(HWND_TOP),
                 platform::scale(dropdown::PADDING, dpi),
                 platform::scale(dropdown::PADDING, dpi),
                 width,
-                height,
+                list_height,
                 SWP_NOACTIVATE,
             );
-            SendMessageW(
-                self.list,
-                LB_SETHORIZONTALEXTENT,
-                Some(WPARAM(self.text_width as usize)),
-                None,
-            );
-            let _ = ShowScrollBar(self.list, SB_VERT, vertical);
-            let _ = ShowScrollBar(self.list, SB_HORZ, horizontal);
-            // Scrollbars are nonclient content; client invalidation alone leaves stale pixels.
-            let _ = RedrawWindow(Some(self.list), None, None, RDW_FRAME | RDW_INVALIDATE);
+            let _ = InvalidateRect(Some(self.list), None, false);
         }
     }
 
@@ -411,7 +416,8 @@ impl MicrophonePicker {
                 state.dpi,
             );
             let mut rect = item.rcItem;
-            rect.left = platform::scale(14, state.dpi) - GetScrollPos(self.list, SB_HORZ);
+            rect.left = platform::scale(14, state.dpi)
+                - dropdown_scrollbar::horizontal_offset(self.horizontal_scrollbar);
             rect.right = rect.left + self.text_width;
             SetTextColor(
                 item.hDC,

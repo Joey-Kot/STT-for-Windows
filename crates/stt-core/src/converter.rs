@@ -125,7 +125,13 @@ pub fn ffmpeg_codec_for(codec: &str) -> Option<(&'static str, bool)> {
         "pcm" => Some(("pcm_s16le", false)),
         "vorbis" | "libvorbis" | "vorb" => Some(("libvorbis", true)),
         "adpcm" => Some(("adpcm_ms", false)),
-        "amr" => Some(("libopencore_amrnb", true)),
+        "amr" | "libopencore_amrnb" => Some(("libopencore_amrnb", true)),
+        "amr_wb" | "libvo_amrwbenc" => Some(("libvo_amrwbenc", true)),
+        "speex" | "libspeex" => Some(("libspeex", true)),
+        "wmav1" => Some(("wmav1", true)),
+        "wmav2" => Some(("wmav2", true)),
+        "pcm_alaw" => Some(("pcm_alaw", false)),
+        "pcm_mulaw" => Some(("pcm_mulaw", false)),
         value @ ("pcm_f32be" | "pcm_f32le" | "pcm_f64be" | "pcm_f64le" | "pcm_s16be"
         | "pcm_s16le" | "pcm_s24be" | "pcm_s24le" | "pcm_s32be" | "pcm_s32le"
         | "pcm_s64be" | "pcm_s64le" | "pcm_s8") => {

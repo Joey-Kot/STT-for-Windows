@@ -39,9 +39,9 @@ defaults. Missing fields receive defaults and unknown fields are ignored.
 | `ENABLE_VAD` | `false` | Shared by GUI, CLI recording and CLI file mode |
 | `VAD_PADDING_MS` | `100` | Integer 0–1000 milliseconds; validated even while VAD is off |
 | `SAMPLING_RATE_DEPTH` | `16` | 8, 16, 24, or 32 |
-| `BIT_RATE` | `32` | Greater than zero |
+| `BIT_RATE` | `128` | Greater than zero |
 | `CODECS` | `"opus"` | Existing alias list, case-insensitive |
-| `CONTAINER` | `"ogg"` | Existing container list, case-insensitive |
+| `CONTAINER` | `"opus"` | Existing container list, case-insensitive |
 | `REQUEST_TIMEOUT` | `60` | Seconds; positive values set the client timeout |
 | `MAX_RETRY` | `3` | Attempt limit, including the first request |
 | `RETRY_BASE_DELAY` | `0.5` | Seconds, doubled after each failure |

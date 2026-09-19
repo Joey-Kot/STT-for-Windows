@@ -8,8 +8,8 @@ use windows::Win32::UI::Controls::WM_MOUSELEAVE;
 use windows::Win32::UI::Input::KeyboardAndMouse::{TME_LEAVE, TRACKMOUSEEVENT, TrackMouseEvent};
 use windows::Win32::UI::Shell::{DefSubclassProc, GetWindowSubclass, SetWindowSubclass};
 use windows::Win32::UI::WindowsAndMessaging::{
-    GetCursorPos, LB_GETITEMRECT, LB_ITEMFROMPOINT, LB_RESETCONTENT, WM_MOUSEMOVE, WM_MOUSEWHEEL,
-    WM_VSCROLL,
+    GetCursorPos, LB_GETITEMRECT, LB_ITEMFROMPOINT, LB_RESETCONTENT, LB_SETTOPINDEX, WM_CHAR,
+    WM_KEYDOWN, WM_MOUSEMOVE, WM_MOUSEWHEEL, WM_VSCROLL,
 };
 
 pub(super) const PADDING: i32 = 8;
@@ -78,8 +78,16 @@ unsafe extern "system" fn hover_proc(
         let result = DefSubclassProc(hwnd, message, wparam, lparam);
         if matches!(
             message,
-            WM_MOUSEMOVE | WM_MOUSELEAVE | WM_MOUSEWHEEL | WM_VSCROLL | LB_RESETCONTENT
-        ) {
+            WM_MOUSEMOVE
+                | WM_MOUSELEAVE
+                | WM_MOUSEWHEEL
+                | WM_VSCROLL
+                | LB_RESETCONTENT
+                | LB_SETTOPINDEX
+                | WM_KEYDOWN
+                | WM_CHAR
+        ) && (data & 1 != 0 || !matches!(message, WM_KEYDOWN | WM_CHAR))
+        {
             let list = data & 1 != 0;
             let old = data >> 1;
             let mut row = 0;
@@ -214,11 +222,23 @@ pub(super) fn position_pixels(panel: HWND, button: HWND, height: i32, dpi: u32) 
         }
         let width = bounds.right - bounds.left;
         let height = height + platform::scale(PADDING * 2, dpi);
+        let gap = platform::scale(6, dpi);
+        let mut client = RECT::default();
+        let _ = GetClientRect(parent, &mut client);
+        // Audio fields near the footer need to open upward. Keep the entire menu
+        // inside the settings content area instead of clipping its final rows.
+        let below = origin.y + gap;
+        let top = if below + height > client.bottom - platform::scale(FOOTER_HEIGHT, dpi) {
+            (origin.y - (bounds.bottom - bounds.top) - gap - height)
+                .max(platform::scale(HEADER_HEIGHT, dpi))
+        } else {
+            below
+        };
         let _ = SetWindowPos(
             panel,
             Some(HWND_TOP),
             origin.x,
-            origin.y + platform::scale(6, dpi),
+            top,
             width,
             height,
             SWP_NOACTIVATE,

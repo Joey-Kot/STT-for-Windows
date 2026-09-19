@@ -5,9 +5,9 @@
 set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 task_dir="${STT_NATIVE_TEST_DIR:-$root/native-audio-test-tmp}"
-source_repo="${STT_FFMPEG_SOURCE:-$root/build/ffmpeg/ffmpeg}"
+source_archive="${STT_FFMPEG_ARCHIVE:-$root/build/ffmpeg/ffmpeg-8.1.tar.xz}"
 mkdir -p "$task_dir/source" "$task_dir/build"
-git -C "$source_repo" archive HEAD | tar -x -C "$task_dir/source"
+tar -xf "$source_archive" --strip-components=1 -C "$task_dir/source"
 cd "$task_dir/build"
 ../source/configure \
     --prefix="$task_dir/install" --disable-programs --disable-doc --disable-debug \

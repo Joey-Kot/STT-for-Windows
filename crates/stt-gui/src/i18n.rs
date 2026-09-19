@@ -83,6 +83,12 @@ fn lookup(table: &'static [(&'static str, &'static str)], key: &str) -> Option<&
 }
 
 const ENGLISH: &[(&str, &str)] = &[
+    ("audio_custom", "Custom…"),
+    ("audio_current", "Current value"),
+    ("audio_mono", "Mono"),
+    ("audio_stereo", "Stereo"),
+    ("audio_unused", "Not used by this codec"),
+    ("audio_depth_encoder", "Determined by encoder"),
     ("settings", "Settings"),
     ("save", "Save"),
     ("cancel", "Cancel"),
@@ -177,6 +183,12 @@ const ENGLISH: &[(&str, &str)] = &[
 ];
 
 const CHINESE: &[(&str, &str)] = &[
+    ("audio_custom", "自定义…"),
+    ("audio_current", "当前值"),
+    ("audio_mono", "单声道"),
+    ("audio_stereo", "双声道"),
+    ("audio_unused", "此编码不使用码率"),
+    ("audio_depth_encoder", "由编码器决定"),
     ("settings", "设置"),
     ("save", "保存"),
     ("cancel", "取消"),
@@ -268,6 +280,12 @@ const CHINESE: &[(&str, &str)] = &[
 ];
 
 const GERMAN: &[(&str, &str)] = &[
+    ("audio_custom", "Benutzerdefiniert…"),
+    ("audio_current", "Aktueller Wert"),
+    ("audio_mono", "Mono"),
+    ("audio_stereo", "Stereo"),
+    ("audio_unused", "Vom Codec nicht verwendet"),
+    ("audio_depth_encoder", "Vom Encoder bestimmt"),
     ("settings", "Einstellungen"),
     ("save", "Speichern"),
     ("cancel", "Abbrechen"),
@@ -371,6 +389,12 @@ const GERMAN: &[(&str, &str)] = &[
 ];
 
 const JAPANESE: &[(&str, &str)] = &[
+    ("audio_custom", "カスタム…"),
+    ("audio_current", "現在の値"),
+    ("audio_mono", "モノラル"),
+    ("audio_stereo", "ステレオ"),
+    ("audio_unused", "このコーデックでは未使用"),
+    ("audio_depth_encoder", "エンコーダーが決定"),
     ("settings", "設定"),
     ("save", "保存"),
     ("cancel", "キャンセル"),
@@ -468,6 +492,12 @@ const JAPANESE: &[(&str, &str)] = &[
 ];
 
 const FRENCH: &[(&str, &str)] = &[
+    ("audio_custom", "Personnalisé…"),
+    ("audio_current", "Valeur actuelle"),
+    ("audio_mono", "Mono"),
+    ("audio_stereo", "Stéréo"),
+    ("audio_unused", "Non utilisé par ce codec"),
+    ("audio_depth_encoder", "Déterminée par l’encodeur"),
     ("settings", "Paramètres"),
     ("save", "Enregistrer"),
     ("cancel", "Annuler"),

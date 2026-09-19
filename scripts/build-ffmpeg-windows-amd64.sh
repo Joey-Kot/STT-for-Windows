@@ -9,10 +9,21 @@ JOBS="${JOBS:-$(nproc)}"
 
 OGG_VERSION="${OGG_VERSION:-1.3.5}"
 VORBIS_VERSION="${VORBIS_VERSION:-1.3.7}"
-OPUS_VERSION="${OPUS_VERSION:-1.5.2}"
-LAME_VERSION="${LAME_VERSION:-3.100}"
+OPUS_VERSION="1.5.2"
+OPUS_ARCHIVE="opus-$OPUS_VERSION.tar.gz"
+OPUS_URL="https://downloads.xiph.org/releases/opus/$OPUS_ARCHIVE"
+OPUS_SHA256="65c1d2f78b9f2fb20082c38cbe47c951ad5839345876e46941612ee87f9a7ce1"
+LAME_VERSION="3.100"
+LAME_ARCHIVE="lame-$LAME_VERSION.tar.gz"
+LAME_URL="https://downloads.sourceforge.net/project/lame/lame/$LAME_VERSION/$LAME_ARCHIVE"
+LAME_SHA256="ddfe36cab873794038ae2c1210557ad34857a4b6bdc515785d1da9e175b1da1e"
 OPENCORE_AMR_VERSION="${OPENCORE_AMR_VERSION:-0.1.6}"
-FFMPEG_REF="${FFMPEG_REF:-n7.1.1}"
+SPEEX_VERSION="${SPEEX_VERSION:-1.2.1}"
+VO_AMRWBENC_VERSION="${VO_AMRWBENC_VERSION:-0.1.3}"
+FFMPEG_VERSION="8.1"
+FFMPEG_ARCHIVE="ffmpeg-$FFMPEG_VERSION.tar.xz"
+FFMPEG_URL="https://ffmpeg.org/releases/$FFMPEG_ARCHIVE"
+FFMPEG_SHA256="b072aed6871998cce9b36e7774033105ca29e33632be5b6347f3206898e0756a"
 
 mkdir -p "$BUILD_DIR" "$PREFIX"
 
@@ -26,7 +37,8 @@ fetch_tarball() {
 	local url="$1"
 	local out="$2"
 	if [ ! -f "$out" ]; then
-		curl -L "$url" -o "$out"
+		curl --fail --location "$url" -o "$out.part"
+		mv "$out.part" "$out"
 	fi
 }
 
@@ -35,15 +47,6 @@ extract_once() {
 	local dir="$2"
 	if [ ! -d "$dir" ]; then
 		tar -xf "$tarball" -C "$BUILD_DIR"
-	fi
-}
-
-clone_once() {
-	local url="$1"
-	local ref="$2"
-	local dir="$3"
-	if [ ! -d "$dir/.git" ]; then
-		git clone --depth 1 --branch "$ref" "$url" "$dir"
 	fi
 }
 
@@ -78,20 +81,42 @@ fetch_tarball "https://downloads.xiph.org/releases/vorbis/libvorbis-$VORBIS_VERS
 extract_once "$BUILD_DIR/libvorbis-$VORBIS_VERSION.tar.xz" "$BUILD_DIR/libvorbis-$VORBIS_VERSION"
 build_autotools "$BUILD_DIR/libvorbis-$VORBIS_VERSION" --disable-oggtest
 
-fetch_tarball "https://downloads.xiph.org/releases/opus/opus-$OPUS_VERSION.tar.gz" "$BUILD_DIR/opus-$OPUS_VERSION.tar.gz"
-extract_once "$BUILD_DIR/opus-$OPUS_VERSION.tar.gz" "$BUILD_DIR/opus-$OPUS_VERSION"
+fetch_tarball "$OPUS_URL" "$BUILD_DIR/$OPUS_ARCHIVE"
+printf '%s  %s\n' "$OPUS_SHA256" "$BUILD_DIR/$OPUS_ARCHIVE" | sha256sum --check --strict
+extract_once "$BUILD_DIR/$OPUS_ARCHIVE" "$BUILD_DIR/opus-$OPUS_VERSION"
 build_autotools "$BUILD_DIR/opus-$OPUS_VERSION" --disable-extra-programs --disable-doc
 
-fetch_tarball "https://downloads.sourceforge.net/project/lame/lame/$LAME_VERSION/lame-$LAME_VERSION.tar.gz" "$BUILD_DIR/lame-$LAME_VERSION.tar.gz"
-extract_once "$BUILD_DIR/lame-$LAME_VERSION.tar.gz" "$BUILD_DIR/lame-$LAME_VERSION"
+fetch_tarball "$LAME_URL" "$BUILD_DIR/$LAME_ARCHIVE"
+printf '%s  %s\n' "$LAME_SHA256" "$BUILD_DIR/$LAME_ARCHIVE" | sha256sum --check --strict
+extract_once "$BUILD_DIR/$LAME_ARCHIVE" "$BUILD_DIR/lame-$LAME_VERSION"
 build_autotools "$BUILD_DIR/lame-$LAME_VERSION" --disable-frontend --disable-decoder
 
 fetch_tarball "https://downloads.sourceforge.net/project/opencore-amr/opencore-amr/opencore-amr-$OPENCORE_AMR_VERSION.tar.gz" "$BUILD_DIR/opencore-amr-$OPENCORE_AMR_VERSION.tar.gz"
 extract_once "$BUILD_DIR/opencore-amr-$OPENCORE_AMR_VERSION.tar.gz" "$BUILD_DIR/opencore-amr-$OPENCORE_AMR_VERSION"
 build_autotools "$BUILD_DIR/opencore-amr-$OPENCORE_AMR_VERSION"
 
-clone_once "https://github.com/FFmpeg/FFmpeg.git" "$FFMPEG_REF" "$BUILD_DIR/ffmpeg"
-cd "$BUILD_DIR/ffmpeg"
+fetch_tarball "https://downloads.xiph.org/releases/speex/speex-$SPEEX_VERSION.tar.gz" "$BUILD_DIR/speex-$SPEEX_VERSION.tar.gz"
+extract_once "$BUILD_DIR/speex-$SPEEX_VERSION.tar.gz" "$BUILD_DIR/speex-$SPEEX_VERSION"
+build_autotools "$BUILD_DIR/speex-$SPEEX_VERSION" --disable-binaries --disable-examples
+
+fetch_tarball "https://downloads.sourceforge.net/project/opencore-amr/vo-amrwbenc/vo-amrwbenc-$VO_AMRWBENC_VERSION.tar.gz" "$BUILD_DIR/vo-amrwbenc-$VO_AMRWBENC_VERSION.tar.gz"
+extract_once "$BUILD_DIR/vo-amrwbenc-$VO_AMRWBENC_VERSION.tar.gz" "$BUILD_DIR/vo-amrwbenc-$VO_AMRWBENC_VERSION"
+build_autotools "$BUILD_DIR/vo-amrwbenc-$VO_AMRWBENC_VERSION"
+
+fetch_tarball "$FFMPEG_URL" "$BUILD_DIR/$FFMPEG_ARCHIVE"
+printf '%s  %s\n' "$FFMPEG_SHA256" "$BUILD_DIR/$FFMPEG_ARCHIVE" | sha256sum --check --strict
+extract_once "$BUILD_DIR/$FFMPEG_ARCHIVE" "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
+cd "$BUILD_DIR/ffmpeg-$FFMPEG_VERSION"
+
+# These are configure component names, not filename extensions or runtime aliases.
+# Speex uses Ogg/SPX, WMA uses ASF, M4A uses IPOD, MKV uses MATROSKA,
+# AAC uses ADTS, MPEG uses MPEG1SYSTEM, and raw PCM muxers need the pcm_ prefix.
+# WMA Pro/Lossless, WMV3 and VC-1 are intentionally excluded.
+demuxers=wav,mp3,flac,ogg,mov,aac,matroska,wv,ac3,eac3,amr,avi,flv,mpegps,asf,aiff,pcm_s8,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_alaw,pcm_mulaw
+parsers=mpegaudio,flac,opus,vorbis,aac,aac_latm,ac3,amr
+decoders=mp3,mp3float,mp2,flac,opus,vorbis,aac,aac_latm,alac,wavpack,ac3,eac3,amrnb,amrwb,libspeex,wmav1,wmav2,pcm_u8,pcm_alaw,pcm_mulaw,adpcm_ms,adpcm_ima_wav,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_s64be,pcm_s64le,pcm_s8
+encoders=libopus,wavpack,aac,ac3,eac3,libmp3lame,mp2,flac,alac,libvorbis,adpcm_ms,libopencore_amrnb,libvo_amrwbenc,libspeex,wmav1,wmav2,pcm_alaw,pcm_mulaw,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_s64be,pcm_s64le,pcm_s8
+muxers=wav,ac3,ogg,mp3,flac,eac3,adts,ipod,mov,mp4,opus,webm,wv,spx,amr,avi,flv,matroska,mpeg1system,asf,aiff,pcm_s8,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_alaw,pcm_mulaw
 
 ./configure \
 	--prefix="$PREFIX" \
@@ -116,15 +141,37 @@ cd "$BUILD_DIR/ffmpeg"
 	--enable-swresample \
 	--enable-protocol=file \
 	--disable-avfilter \
-	--enable-demuxer=wav,mp3,flac,ogg,mov,aac,matroska,wv,ac3,eac3 \
-	--enable-parser=mpegaudio,flac,opus,vorbis,aac,aac_latm,ac3 \
-	--enable-decoder=mp3,mp3float,mp2,flac,opus,vorbis,aac,aac_latm,alac,wavpack,ac3,eac3,pcm_u8,pcm_alaw,pcm_mulaw,adpcm_ms,adpcm_ima_wav,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_s64be,pcm_s64le,pcm_s8 \
-	--enable-encoder=libopus,wavpack,aac,ac3,eac3,libmp3lame,mp2,mp1,flac,alac,libvorbis,adpcm_ms,libopencore_amrnb,pcm_f32be,pcm_f32le,pcm_f64be,pcm_f64le,pcm_s16be,pcm_s16le,pcm_s24be,pcm_s24le,pcm_s32be,pcm_s32le,pcm_s64be,pcm_s64le,pcm_s8 \
-	--enable-muxer=wav,ac3,ac4,ogg,mp3,flac,eac3,adts,ipod,mp4,opus,webm,s8,s16be,s16le,s24be,s24le,s32be,s32le,f32be,f32le,f64be,f64le \
+	--enable-demuxer="$demuxers" \
+	--enable-parser="$parsers" \
+	--enable-decoder="$decoders" \
+	--enable-encoder="$encoders" \
+	--enable-muxer="$muxers" \
 	--enable-libopus \
 	--enable-libmp3lame \
 	--enable-libvorbis \
-	--enable-libopencore-amrnb
+	--enable-libopencore-amrnb \
+	--enable-libvo-amrwbenc \
+	--enable-libspeex
+
+# configure can succeed after silently ignoring an unknown or unavailable component.
+# Fail before compilation if any requested component was not actually enabled.
+check_components() {
+	local kind="$1" component symbol
+	local -a components
+	IFS=, read -r -a components <<< "$2"
+	for component in "${components[@]}"; do
+		symbol="CONFIG_${component^^}_${kind}"
+		if ! grep -qx "#define $symbol 1" config_components.h; then
+			echo "Required FFmpeg component was not enabled: $component ($kind)" >&2
+			exit 1
+		fi
+	done
+}
+check_components DEMUXER "$demuxers"
+check_components PARSER "$parsers"
+check_components DECODER "$decoders"
+check_components ENCODER "$encoders"
+check_components MUXER "$muxers"
 
 make -j"$JOBS"
 make install

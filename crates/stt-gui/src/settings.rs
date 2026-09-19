@@ -50,7 +50,10 @@ use crate::platform;
 use crate::render::{PANEL_CORNER_RADIUS, RoundedOutlineRenderer, continuous_rounded_rect_polygon};
 use crate::resources;
 
+mod audio;
 mod dropdown;
+#[path = "dropdown_scrollbar.rs"]
+mod dropdown_scrollbar;
 mod microphone;
 use microphone::{
     ID_MICROPHONE, ID_MICROPHONE_LIST, MICROPHONE_TIMER, MicrophonePicker, WM_MICROPHONE_ACTION,
@@ -58,7 +61,10 @@ use microphone::{
 
 pub fn microphone_handles_escape(hwnd: HWND) -> bool {
     unsafe {
-        windows::Win32::UI::WindowsAndMessaging::GetDlgCtrlID(hwnd) == ID_MICROPHONE_LIST as i32
+        let id = windows::Win32::UI::WindowsAndMessaging::GetDlgCtrlID(hwnd) as usize;
+        id == ID_MICROPHONE_LIST
+            || (audio::ID_LIST_BASE..audio::ID_LIST_BASE + 6).contains(&id)
+            || (0x6410..0x6416).contains(&id)
     }
 }
 
@@ -352,6 +358,8 @@ struct SettingsState {
     language_panel: HWND,
     language_open: bool,
     microphone: Option<MicrophonePicker>,
+    audio_draft: crate::audio_options::AudioDraft,
+    audio_pickers: Vec<audio::AudioPicker>,
     boolean_values: HashMap<&'static str, bool>,
     boolean_ids: HashMap<usize, &'static str>,
     input_frames: Vec<InputFrame>,
@@ -457,7 +465,7 @@ impl SettingsWindow {
         let state = Box::new(SettingsState {
             hwnd: HWND::default(),
             owner,
-            runtime,
+            runtime: runtime.clone(),
             controls: HashMap::new(),
             config_path: platform::config_path()?,
             saving: false,
@@ -468,6 +476,8 @@ impl SettingsWindow {
             language_panel: HWND::default(),
             language_open: false,
             microphone: None,
+            audio_draft: crate::audio_options::AudioDraft::new(&runtime.config()),
+            audio_pickers: Vec::new(),
             boolean_values: HashMap::new(),
             boolean_ids: HashMap::new(),
             input_frames: Vec::new(),
@@ -575,14 +585,26 @@ unsafe extern "system" fn settings_proc(
         WM_COMMAND => {
             let id = wparam.0 & 0xffff;
             let notification = ((wparam.0 >> 16) & 0xffff) as u32;
+            if notification == BN_CLICKED
+                && let Some(field) = state
+                    .audio_pickers
+                    .iter()
+                    .find(|p| p.button.0 as isize == lparam.0)
+                    .map(|p| p.field)
+            {
+                audio::action(state, field, 4, LPARAM(0));
+                return LRESULT(0);
+            }
             if id >= ID_PAGE_BASE && id < ID_PAGE_BASE + GROUPS.len() && notification == BN_CLICKED
             {
                 set_language_dropdown(state, false);
+                audio::close_all(state);
                 if let Some(picker) = &mut state.microphone {
                     picker.set_open(false, state.language, state.dpi);
                 }
                 state.active_group = id - ID_PAGE_BASE;
                 update_page_visibility(state);
+                audio::refresh(state);
                 for button in &state.page_buttons {
                     unsafe {
                         let _ = InvalidateRect(Some(*button), None, true);
@@ -594,6 +616,7 @@ unsafe extern "system" fn settings_proc(
             } else if id == ID_LANGUAGE && notification == BN_CLICKED {
                 set_language_dropdown(state, !state.language_open);
             } else if id == ID_MICROPHONE && notification == BN_CLICKED && !state.saving {
+                audio::close_all(state);
                 if let Some(picker) = &mut state.microphone {
                     picker.set_open(!picker.open, state.language, state.dpi);
                 }
@@ -633,6 +656,7 @@ unsafe extern "system" fn settings_proc(
             LRESULT(0)
         }
         WM_LBUTTONDOWN => {
+            audio::close_all(state);
             if let Some(picker) = &mut state.microphone {
                 picker.set_open(false, state.language, state.dpi);
             }
@@ -652,6 +676,10 @@ unsafe extern "system" fn settings_proc(
                 if let Some(picker) = &state.microphone {
                     picker.draw(state, item);
                 }
+            } else if let Some(picker) =
+                state.audio_pickers.iter().find(|p| item.hwndItem == p.list)
+            {
+                picker.draw(state, item);
             } else {
                 draw_owner_button(state, item);
             }
@@ -660,7 +688,9 @@ unsafe extern "system" fn settings_proc(
         windows::Win32::UI::WindowsAndMessaging::WM_MEASUREITEM => {
             let item =
                 unsafe { &mut *(lparam.0 as *mut windows::Win32::UI::Controls::MEASUREITEMSTRUCT) };
-            if item.CtlID as usize == ID_MICROPHONE_LIST {
+            if item.CtlID as usize == ID_MICROPHONE_LIST
+                || (audio::ID_LIST_BASE..audio::ID_LIST_BASE + 6).contains(&(item.CtlID as usize))
+            {
                 item.itemHeight = platform::scale(36, state.dpi) as u32;
                 LRESULT(1)
             } else {
@@ -671,6 +701,10 @@ unsafe extern "system" fn settings_proc(
             if let Some(picker) = &mut state.microphone {
                 picker.poll(state.language, state.dpi);
             }
+            LRESULT(0)
+        }
+        audio::WM_ACTION => {
+            audio::action(state, wparam.0 >> 8, wparam.0 & 0xff, lparam);
             LRESULT(0)
         }
         WM_MICROPHONE_ACTION => {
@@ -767,6 +801,7 @@ unsafe extern "system" fn settings_proc(
                 picker.rebuild(state.language, state.dpi);
             }
             set_language_dropdown(state, state.language_open);
+            audio::refresh(state);
             LRESULT(0)
         }
         WM_WINDOWPOSCHANGED => {
@@ -1029,76 +1064,89 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
         state.localized_controls.push((label, field.key));
 
         let value = object.get(field.key).cloned().unwrap_or_default();
-        let control = match field.kind {
-            FieldKind::Boolean => {
-                let id = ID_FIELD_BASE + index;
-                let hwnd = create_child(
-                    state,
-                    w!("BUTTON"),
-                    "",
-                    WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW as u32),
-                    EDIT_LEFT,
-                    y + 5,
-                    24,
-                    24,
-                    id,
-                    instance,
-                )?;
-                state
-                    .boolean_values
-                    .insert(field.key, value.as_bool().unwrap_or(false));
-                state.boolean_ids.insert(id, field.key);
-                hwnd
-            }
-            kind => {
-                let text = match value {
-                    serde_json::Value::String(text) => text,
-                    other => other.to_string(),
-                };
-                let multiline = matches!(kind, FieldKind::Multiline);
-                let frame_height = if multiline { 68 } else { FIELD_HEIGHT };
-                let mut style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
-                style |= WINDOW_STYLE(if multiline {
-                    (ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32
-                } else {
-                    ES_AUTOHSCROLL as u32
-                });
-                if matches!(kind, FieldKind::Password) {
-                    style |= WINDOW_STYLE(ES_PASSWORD as u32);
+        let control = if let Some(audio_field) = crate::audio_options::KEYS
+            .iter()
+            .position(|key| *key == field.key)
+        {
+            let picker =
+                audio::AudioPicker::create(state, audio_field, ID_FIELD_BASE + index, y, instance)?;
+            let button = picker.button;
+            state.audio_pickers.push(picker);
+            button
+        } else {
+            match field.kind {
+                FieldKind::Boolean => {
+                    let id = ID_FIELD_BASE + index;
+                    let hwnd = create_child(
+                        state,
+                        w!("BUTTON"),
+                        "",
+                        WINDOW_STYLE(
+                            WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW as u32,
+                        ),
+                        EDIT_LEFT,
+                        y + 5,
+                        24,
+                        24,
+                        id,
+                        instance,
+                    )?;
+                    state
+                        .boolean_values
+                        .insert(field.key, value.as_bool().unwrap_or(false));
+                    state.boolean_ids.insert(id, field.key);
+                    hwnd
                 }
-                let hwnd = create_child(
-                    state,
-                    w!("EDIT"),
-                    &text,
-                    style,
-                    EDIT_LEFT + 3,
-                    y + if multiline { 5 } else { 7 },
-                    EDIT_WIDTH - 6,
-                    if multiline { frame_height - 10 } else { 20 },
-                    ID_FIELD_BASE + index,
-                    instance,
-                )?;
-                apply_dark_theme(hwnd);
-                unsafe {
-                    let margin = platform::scale(7, state.dpi) as u32;
-                    SendMessageW(
-                        hwnd,
-                        EM_SETMARGINS,
-                        Some(WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize)),
-                        Some(LPARAM((margin | (margin << 16)) as isize)),
-                    );
+                kind => {
+                    let text = match value {
+                        serde_json::Value::String(text) => text,
+                        other => other.to_string(),
+                    };
+                    let multiline = matches!(kind, FieldKind::Multiline);
+                    let frame_height = if multiline { 68 } else { FIELD_HEIGHT };
+                    let mut style = WS_CHILD | WS_VISIBLE | WS_TABSTOP;
+                    style |= WINDOW_STYLE(if multiline {
+                        (ES_MULTILINE | ES_AUTOVSCROLL | ES_WANTRETURN) as u32
+                    } else {
+                        ES_AUTOHSCROLL as u32
+                    });
+                    if matches!(kind, FieldKind::Password) {
+                        style |= WINDOW_STYLE(ES_PASSWORD as u32);
+                    }
+                    let hwnd = create_child(
+                        state,
+                        w!("EDIT"),
+                        &text,
+                        style,
+                        EDIT_LEFT + 3,
+                        y + if multiline { 5 } else { 7 },
+                        EDIT_WIDTH - 6,
+                        if multiline { frame_height - 10 } else { 20 },
+                        ID_FIELD_BASE + index,
+                        instance,
+                    )?;
+                    apply_dark_theme(hwnd);
+                    unsafe {
+                        let margin = platform::scale(7, state.dpi) as u32;
+                        SendMessageW(
+                            hwnd,
+                            EM_SETMARGINS,
+                            Some(WPARAM((EC_LEFTMARGIN | EC_RIGHTMARGIN) as usize)),
+                            Some(LPARAM((margin | (margin << 16)) as isize)),
+                        );
+                    }
+                    state.input_frames.push(InputFrame {
+                        rect: RECT {
+                            left: EDIT_LEFT,
+                            top: y,
+                            right: EDIT_LEFT + EDIT_WIDTH,
+                            bottom: y + frame_height,
+                        },
+                        group: field.group,
+                        control: hwnd,
+                    });
+                    hwnd
                 }
-                state.input_frames.push(InputFrame {
-                    rect: RECT {
-                        left: EDIT_LEFT,
-                        top: y,
-                        right: EDIT_LEFT + EDIT_WIDTH,
-                        bottom: y + frame_height,
-                    },
-                    group: field.group,
-                    control: hwnd,
-                });
-                hwnd
             }
         };
         state.controls.insert(field.key, control);
@@ -1113,6 +1161,7 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
         );
     }
 
+    audio::refresh(state);
     let vad_hint = create_label(
         state,
         state.language.text("vad_hint"),
@@ -1471,11 +1520,22 @@ fn draw_owner_button(state: &SettingsState, item: &DRAWITEMSTRUCT) {
             return;
         }
 
-        if id == ID_LANGUAGE || id == ID_MICROPHONE {
+        if id == ID_LANGUAGE
+            || id == ID_MICROPHONE
+            || state
+                .audio_pickers
+                .iter()
+                .any(|p| p.button == item.hwndItem)
+        {
             let open = if id == ID_LANGUAGE {
                 state.language_open
-            } else {
+            } else if id == ID_MICROPHONE {
                 state.microphone.as_ref().is_some_and(|p| p.open)
+            } else {
+                state
+                    .audio_pickers
+                    .iter()
+                    .any(|p| p.button == item.hwndItem && p.open)
             };
             rounded_box(
                 item.hDC,
@@ -1495,7 +1555,11 @@ fn draw_owner_button(state: &SettingsState, item: &DRAWITEMSTRUCT) {
             draw_button_text(
                 state,
                 item,
-                rgb(234, 242, 243),
+                if item.itemState.0 & ODS_DISABLED.0 != 0 {
+                    rgb(110, 126, 130)
+                } else {
+                    rgb(234, 242, 243)
+                },
                 DT_LEFT,
                 scale(14),
                 scale(42),
@@ -2058,6 +2122,7 @@ fn select_language(state: &mut SettingsState, index: usize) {
     language.save();
     set_language_dropdown(state, false);
     refresh_language(state);
+    audio::refresh(state);
     if let Some(picker) = &mut state.microphone {
         picker.rebuild(state.language, state.dpi);
     }
@@ -2228,6 +2293,7 @@ fn save(state: &mut SettingsState) {
         return;
     }
     state.saving = true;
+    audio::close_all(state);
     if let Some(picker) = &mut state.microphone {
         picker.set_open(false, state.language, state.dpi);
     }
@@ -2284,8 +2350,26 @@ fn read_config(state: &SettingsState) -> Result<Config, String> {
             serde_json::Value::String(picker.selected_name.clone()),
         );
     }
+    let audio = audio::draft(state);
     for field in FIELDS {
         let hwnd = state.controls[field.key];
+        if let Some(index) = crate::audio_options::KEYS
+            .iter()
+            .position(|key| *key == field.key)
+        {
+            let text = &audio.values[index];
+            let value = if index < 4 {
+                serde_json::Value::Number(
+                    text.parse::<i64>()
+                        .map_err(|_| format!("{} must be an integer", field.label))?
+                        .into(),
+                )
+            } else {
+                serde_json::Value::String(text.clone())
+            };
+            object.insert(field.key.into(), value);
+            continue;
+        }
         let value = match field.kind {
             FieldKind::Boolean => serde_json::Value::Bool(
                 state
@@ -2345,6 +2429,13 @@ fn enable_controls(state: &SettingsState, enabled: bool) {
 }
 
 fn update_input_controls(state: &SettingsState) {
+    for picker in &state.audio_pickers {
+        let enabled = !state.saving && state.audio_draft.enabled(picker.field);
+        unsafe {
+            let _ = EnableWindow(picker.button, enabled);
+            let _ = EnableWindow(picker.editor, enabled);
+        }
+    }
     if let Some(control) = state.controls.get("VAD_PADDING_MS") {
         let enabled = !state.saving
             && state

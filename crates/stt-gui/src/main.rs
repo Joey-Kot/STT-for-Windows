@@ -1,5 +1,9 @@
 #![cfg_attr(windows, windows_subsystem = "windows")]
 
+#[cfg(any(windows, test))]
+mod audio_options;
+#[cfg(all(test, not(windows)))]
+mod dropdown_scrollbar;
 #[cfg(windows)]
 mod i18n;
 #[cfg(windows)]

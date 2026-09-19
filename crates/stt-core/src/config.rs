@@ -110,9 +110,9 @@ impl Default for Config {
             enable_vad: false,
             vad_padding_ms: 100,
             sampling_rate_depth: 16,
-            bit_rate: 32,
+            bit_rate: 128,
             codecs: "opus".into(),
-            container: "ogg".into(),
+            container: "opus".into(),
             request_timeout: 60,
             max_retry: 3,
             retry_base_delay: 0.5,
@@ -259,6 +259,15 @@ impl Config {
             "vorb",
             "adpcm",
             "amr",
+            "amr_wb",
+            "libvo_amrwbenc",
+            "libopencore_amrnb",
+            "speex",
+            "libspeex",
+            "wmav1",
+            "wmav2",
+            "pcm_alaw",
+            "pcm_mulaw",
             "pcm_f32be",
             "pcm_f32le",
             "pcm_f64be",
@@ -285,7 +294,8 @@ impl Config {
         let containers: HashSet<&str> = [
             "wav", "ac3", "ac4", "ogg", "oga", "mp3", "flac", "eac3", "aac", "m4a", "mp4", "opus",
             "webm", "s8", "s16be", "s16le", "s24be", "s24le", "s32be", "s32le", "f32be", "f32le",
-            "f64be", "f64le",
+            "f64be", "f64le", "spx", "amr", "avi", "flv", "mkv", "mka", "mov", "mpg", "mpeg",
+            "asf", "wma", "aif", "aiff", "afc", "aifc", "wv", "alaw", "mulaw",
         ]
         .into_iter()
         .collect();

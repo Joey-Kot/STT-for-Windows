@@ -35,3 +35,7 @@ windows-numerics = "0.2.0"
 cc = "1.2.33"
 pkg-config = "0.3.32"
 winresource = "0.1.23"
+
+[dev-dependencies]
+hound.workspace = true
+tempfile = "3.21.0"
