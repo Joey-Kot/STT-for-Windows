@@ -517,6 +517,7 @@ If `--output` is omitted, the default output is `<input-file-name>.txt` in the c
 | `--bit-rate <KBPS>` | Overrides the audio bitrate |
 | `--enable-vad <BOOL>` | Enable or explicitly disable speech trimming; default false |
 | `--vad-padding-ms <0-1000>` | Padding in milliseconds; default 100 |
+| `--vad-start-threshold <0.5-1.0>` | Speech start threshold; default 0.6 |
 
 #### Network
 
@@ -584,6 +585,7 @@ The GUI and CLI use the same JSON data structure. Missing fields receive their d
   "SAMPLING_RATE": 16000,
   "ENABLE_VAD": false,
   "VAD_PADDING_MS": 100,
+  "VAD_START_THRESHOLD": 0.6,
   "SAMPLING_RATE_DEPTH": 16,
   "BIT_RATE": 128,
   "CODECS": "mp3",
@@ -659,8 +661,11 @@ With **Follow system default**, changing the Windows default affects the next re
 |---|---:|---|
 | `ENABLE_VAD` | `false` | Applies to GUI recording, CLI recording and CLI `--file` |
 | `VAD_PADDING_MS` | `100` | Integer 0–1000 ms; validated and retained even while VAD is off |
+| `VAD_START_THRESHOLD` | `0.6` | Range 0.5–1.0 (inclusive); validated and retained even while VAD is off |
 
-The Audio page disables the padding input while VAD is off, retaining its value. Detection runs on streamed 16 kHz mono PCM using Earshot 1.2.2. It produces intervals only: final cropping, concatenation, resampling and encoding always use the original input. No analysis WAV or cropped intermediate file is created, and no libavfilter/filtergraph or fixed interval limit is used.
+The Audio page places the start threshold below padding and disables both inputs while VAD is off, retaining their values. Detection runs on streamed 16 kHz mono PCM using Earshot 1.2.2. It produces intervals only: final cropping, concatenation, resampling and encoding always use the original input. No analysis WAV or cropped intermediate file is created, and no libavfilter/filtergraph or fixed interval limit is used.
+
+Starting speech requires three consecutive frames at or above `VAD_START_THRESHOLD`, with up to six candidate frames of lookback including confirmation. Continuation remains at 0.5, and a segment requires at least four continuation-level frames.
 
 The first/last speech boundaries receive up to one full padding. At each internal cut, the preceding segment receives floor(padding/2) milliseconds and the following segment receives the remainder. Gaps no longer than padding are preserved completely and merged. Padding 0 joins speech boundaries directly.
 

@@ -87,7 +87,7 @@ pub const WM_OPACITY_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_
 pub const WM_WINDOW_SCALE_CHANGED: u32 = windows::Win32::UI::WindowsAndMessaging::WM_APP + 25;
 
 const WINDOW_WIDTH: i32 = 760;
-const WINDOW_HEIGHT: i32 = 620;
+const WINDOW_HEIGHT: i32 = 662;
 const HEADER_HEIGHT: i32 = 72;
 const FOOTER_HEIGHT: i32 = 58;
 const SIDEBAR_WIDTH: i32 = 170;
@@ -231,6 +231,12 @@ const FIELDS: &[FieldSpec] = &[
         label: "VAD padding (ms)",
         group: "Audio",
         kind: FieldKind::Integer,
+    },
+    FieldSpec {
+        key: "VAD_START_THRESHOLD",
+        label: "VAD start threshold",
+        group: "Audio",
+        kind: FieldKind::Float,
     },
     FieldSpec {
         key: "REQUEST_TIMEOUT",
@@ -1238,7 +1244,7 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
         state.language.text("cancel"),
         WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW as u32),
         552,
-        574,
+        WINDOW_HEIGHT - 46,
         88,
         34,
         ID_CANCEL,
@@ -1250,7 +1256,7 @@ fn create_controls(state: &mut SettingsState) -> Result<(), String> {
         state.language.text("save"),
         WINDOW_STYLE(WS_CHILD.0 | WS_VISIBLE.0 | WS_TABSTOP.0 | BS_OWNERDRAW as u32),
         650,
-        574,
+        WINDOW_HEIGHT - 46,
         94,
         34,
         ID_SAVE,
@@ -2500,7 +2506,10 @@ fn update_input_controls(state: &SettingsState) {
             let _ = EnableWindow(picker.editor, enabled);
         }
     }
-    if let Some(control) = state.controls.get("VAD_PADDING_MS") {
+    for key in ["VAD_PADDING_MS", "VAD_START_THRESHOLD"] {
+        let Some(control) = state.controls.get(key) else {
+            continue;
+        };
         let enabled = !state.saving
             && state
                 .boolean_values

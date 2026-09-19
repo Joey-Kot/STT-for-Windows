@@ -517,6 +517,7 @@ GUI 选择“跟随系统默认”时，即使下拉框同时显示当前默认�
 | `--bit-rate <KBPS>` | 覆盖音频比特率 |
 | `--enable-vad <BOOL>` | 开启或显式关闭语音裁剪，默认 false |
 | `--vad-padding-ms <0-1000>` | 边界填充毫秒数，默认 100 |
+| `--vad-start-threshold <0.5-1.0>` | 语音启动阈值，默认 0.6 |
 
 #### Network
 
@@ -584,6 +585,7 @@ GUI 和 CLI 使用相同的 JSON 数据结构。缺失字段自动使用默认�
   "SAMPLING_RATE": 16000,
   "ENABLE_VAD": false,
   "VAD_PADDING_MS": 100,
+  "VAD_START_THRESHOLD": 0.6,
   "SAMPLING_RATE_DEPTH": 16,
   "BIT_RATE": 128,
   "CODECS": "mp3",
@@ -659,8 +661,11 @@ core 通过 WASAPI 共享模式打开所选设备，优先使用 Windows 中配�
 |---|---:|---|
 | `ENABLE_VAD` | `false` | 适用于 GUI 录音、CLI 录音和 CLI `--file` |
 | `VAD_PADDING_MS` | `100` | 整数 0～1000 ms；VAD 关闭时仍保留并校验 |
+| `VAD_START_THRESHOLD` | `0.6` | 范围 0.5～1.0，包含边界；VAD 关闭时仍保留并校验 |
 
-Audio 页关闭 VAD 后，边界填充输入框置灰并保留原值。Earshot 1.2.2 在流式 16 kHz 单声道 PCM 上检测，只输出语音区间；最终裁剪、拼接、重采样和编码始终基于原始音频。不生成分析 WAV 或裁剪中间文件，不使用 libavfilter、大型 filtergraph 或固定区间数量上限。
+Audio 页的启动阈值位于边界填充下方；关闭 VAD 后，两项输入框均置灰并保留原值。Earshot 1.2.2 在流式 16 kHz 单声道 PCM 上检测，只输出语音区间；最终裁剪、拼接、重采样和编码始终基于原始音频。不生成分析 WAV 或裁剪中间文件，不使用 libavfilter、大型 filtergraph 或固定区间数量上限。
+
+连续 3 帧达到 `VAD_START_THRESHOLD` 后确认启动，最多回溯 6 个候选帧，包含启动确认帧。延续阈值固定为 0.5，每段必须累计至少 4 帧达到延续阈值。
 
 首个语音片段之前、最后一个片段之后最多各保留完整 padding。内部拼接处，前段后方保留 floor(padding/2) 毫秒，后段前方保留剩余部分，总计一个 padding。原间隔不超过 padding 时完整保留并合并；padding 为 0 时直接拼接语音边界。
 

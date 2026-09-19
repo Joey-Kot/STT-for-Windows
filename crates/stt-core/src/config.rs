@@ -7,6 +7,17 @@ use thiserror::Error;
 
 use crate::hotkey;
 
+pub const DEFAULT_VAD_START_THRESHOLD: f64 = 0.6;
+
+pub fn validate_vad_start_threshold(value: f64) -> Result<(), ConfigError> {
+    if !(0.5..=1.0).contains(&value) {
+        return Err(ConfigError::Invalid(
+            "invalid VAD_START_THRESHOLD (allowed 0.5..=1.0)".into(),
+        ));
+    }
+    Ok(())
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 #[allow(non_snake_case)]
@@ -43,6 +54,8 @@ pub struct Config {
     pub enable_vad: bool,
     #[serde(rename = "VAD_PADDING_MS")]
     pub vad_padding_ms: u32,
+    #[serde(rename = "VAD_START_THRESHOLD")]
+    pub vad_start_threshold: f64,
     #[serde(rename = "SAMPLING_RATE_DEPTH")]
     pub sampling_rate_depth: i32,
     #[serde(rename = "BIT_RATE")]
@@ -109,6 +122,7 @@ impl Default for Config {
             sampling_rate: 16_000,
             enable_vad: false,
             vad_padding_ms: 100,
+            vad_start_threshold: DEFAULT_VAD_START_THRESHOLD,
             sampling_rate_depth: 16,
             bit_rate: 128,
             codecs: "opus".into(),
@@ -191,6 +205,7 @@ impl Config {
     }
 
     pub fn validate(&self) -> Result<(), ConfigError> {
+        validate_vad_start_threshold(self.vad_start_threshold)?;
         crate::jsonpath::parse_text_path(&self.text_path)
             .map_err(|error| ConfigError::Invalid(error.to_string()))?;
         if self.vad_padding_ms > 1000 {
@@ -357,6 +372,32 @@ mod tests {
         let old: super::Config = serde_json::from_str("{}").unwrap();
         assert!(!old.enable_vad);
         assert_eq!(old.vad_padding_ms, 100);
+        assert_eq!(old.vad_start_threshold, 0.6);
+        for threshold in [0.5, 0.6, 1.0] {
+            let config: super::Config = serde_json::from_value(serde_json::json!({
+                "VAD_START_THRESHOLD": threshold
+            }))
+            .unwrap();
+            config.validate().unwrap();
+            assert_eq!(
+                serde_json::from_str::<super::Config>(&serde_json::to_string(&config).unwrap())
+                    .unwrap(),
+                config
+            );
+        }
+        for threshold in [0.499, 1.001, f64::NAN, f64::INFINITY, f64::NEG_INFINITY] {
+            let config = super::Config {
+                vad_start_threshold: threshold,
+                ..Default::default()
+            };
+            assert!(
+                config
+                    .validate()
+                    .unwrap_err()
+                    .to_string()
+                    .contains("VAD_START_THRESHOLD")
+            );
+        }
         for padding in [0, 1000] {
             let config: super::Config = serde_json::from_value(serde_json::json!({
                 "ENABLE_VAD": true, "VAD_PADDING_MS": padding

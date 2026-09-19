@@ -2,7 +2,6 @@
 use crate::{audio_intervals::AudioInterval, converter::ConvertError};
 
 const FRAME: usize = 256;
-const START_THRESHOLD: f32 = 0.6;
 const CONTINUE_THRESHOLD: f32 = 0.5;
 const START_FRAMES: u64 = 3;
 const LOOKBACK_FRAMES: u64 = 6;
@@ -10,6 +9,7 @@ const MIN_VOICE_FRAMES: u64 = 4;
 const END_SILENCE_FRAMES: u64 = 10;
 
 pub struct Vad {
+    start_threshold: f32,
     detector: earshot::Detector,
     pending: [i16; FRAME],
     used: usize,
@@ -23,7 +23,14 @@ pub struct Vad {
 }
 impl Default for Vad {
     fn default() -> Self {
-        Self {
+        Self::new(crate::config::DEFAULT_VAD_START_THRESHOLD).expect("valid default VAD threshold")
+    }
+}
+impl Vad {
+    pub fn new(start_threshold: f64) -> Result<Self, crate::config::ConfigError> {
+        crate::config::validate_vad_start_threshold(start_threshold)?;
+        Ok(Self {
+            start_threshold: start_threshold as f32,
             detector: earshot::Detector::default(),
             pending: [0; FRAME],
             used: 0,
@@ -34,7 +41,7 @@ impl Default for Vad {
             active: false,
             last_voice_end: 0,
             intervals: Vec::new(),
-        }
+        })
     }
 }
 impl Vad {
@@ -66,12 +73,12 @@ impl Vad {
             self.last_voice_end = self.position;
             if !self.active {
                 // Include the confirmation frames in the six-frame lookback.
-                // Before activation all candidate frames meet the continuation
-                // threshold, so trimming the window also caps its voice count.
+                // All candidate frames meet the continuation threshold, so
+                // trimming the window also caps its voice count.
                 *candidate =
                     (*candidate).max(start.saturating_sub((LOOKBACK_FRAMES - 1) * FRAME as u64));
                 self.voiced = self.voiced.min(LOOKBACK_FRAMES);
-                self.consecutive = if score >= START_THRESHOLD {
+                self.consecutive = if score >= self.start_threshold {
                     self.consecutive + 1
                 } else {
                     0
@@ -128,6 +135,37 @@ mod tests {
             vad.push(&[0; 317]).unwrap();
         }
         assert!(vad.finish().unwrap().is_empty());
+    }
+    #[test]
+    fn configured_threshold_changes_startup() {
+        for (threshold, expected) in [(0.6, 1), (0.9, 0), (0.99, 0)] {
+            let mut vad = Vad::new(threshold).unwrap();
+            for _ in 0..4 {
+                vad.accept(0.6, FRAME as u64).unwrap();
+            }
+            assert_eq!(vad.finish().unwrap().len(), expected);
+        }
+        assert!(Vad::new(0.0).is_err());
+        assert!(Vad::new(f64::NAN).is_err());
+    }
+
+    #[test]
+    fn start_threshold_boundaries_are_inclusive() {
+        for threshold in [0.5, 1.0] {
+            let mut vad = Vad::new(threshold).unwrap();
+            for _ in 0..4 {
+                vad.accept(threshold as f32, FRAME as u64).unwrap();
+            }
+            assert_eq!(
+                vad.finish().unwrap(),
+                vec![AudioInterval {
+                    start_frame: 0,
+                    end_frame: 4 * FRAME as u64,
+                }]
+            );
+        }
+        assert!(Vad::new(0.499).is_err());
+        assert!(Vad::new(1.001).is_err());
     }
     #[test]
     fn hysteresis_flush_and_short_bursts() {

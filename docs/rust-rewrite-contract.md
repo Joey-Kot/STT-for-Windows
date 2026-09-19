@@ -41,6 +41,7 @@ defaults. Missing fields receive defaults and unknown fields are ignored.
 | `SAMPLING_RATE` | `16000` | Final upload rate, greater than zero |
 | `ENABLE_VAD` | `false` | Shared by GUI, CLI recording and CLI file mode |
 | `VAD_PADDING_MS` | `100` | Integer 0–1000 milliseconds; validated even while VAD is off |
+| `VAD_START_THRESHOLD` | `0.6` | Range 0.5–1.0 (inclusive); validated even while VAD is off |
 | `SAMPLING_RATE_DEPTH` | `16` | 8, 16, 24, or 32 |
 | `BIT_RATE` | `128` | Greater than zero |
 | `CODECS` | `"opus"` | Existing alias list, case-insensitive |
@@ -177,8 +178,13 @@ remain usable for type checks and report LibAvUnavailable on conversion.
 The native bridge streams arbitrary supported inputs to 16 kHz mono int16
 callbacks for a fresh Earshot 1.2.2 detector per input. Frames contain 256 samples;
 the final partial frame is zero-padded, but interval endpoints exclude padding.
-Segmentation requires two consecutive voiced frames, at least four voiced frames
-per segment, and ten silent frames to close a segment; EOF flushes active speech.
+Segmentation requires three consecutive frames at or above VAD_START_THRESHOLD
+(default 0.6), with up to six candidate frames of lookback including confirmation.
+Before activation, a frame below both the start and continuation thresholds clears
+the candidate. Continuation uses 0.5; at least four continuation-level frames are
+required per segment, and ten silent frames close it. EOF flushes active speech.
+The lookback voice count excludes discarded frames. GUI and CLI pass the shared
+core configuration to the detector.
 
 Half-open intervals count frames per channel. Starts map down and ends map up
 from 16 kHz using u128 arithmetic. Empty intervals are removed; sorted overlapping
@@ -259,8 +265,8 @@ WebView or embedded browser runtime.
   11, preserving antialiased edges; native DWM rounding and the Windows 11 border
   are disabled so no second outer shape is added.
 - Tray menu remains Minimal, Settings, Quit and emits no balloon.
-- Audio settings expose ENABLE_VAD and VAD_PADDING_MS in all five languages.
-  Padding is disabled while VAD is off, retains its value and is validated on save.
+- Audio settings expose ENABLE_VAD, VAD_PADDING_MS and VAD_START_THRESHOLD in all five languages.
+  Padding and start threshold are disabled while VAD is off, retain their values and are validated on save.
 - Settings use native tab/edit/button/checkbox/combobox controls. Token is a
   password edit. Its outer frame uses the same 10 logical pixel continuous-corner
   profile as the floating panels while preserving native child controls. Display

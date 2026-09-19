@@ -163,7 +163,8 @@ mod native {
         if config.enable_vad {
             let start = std::time::Instant::now();
             let mut analysis = Analysis {
-                vad: Vad::default(),
+                vad: Vad::new(config.vad_start_threshold)
+                    .map_err(|error| failed(error.to_string()))?,
                 error: None,
             };
             let result = unsafe {

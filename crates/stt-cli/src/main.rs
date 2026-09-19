@@ -61,6 +61,9 @@ struct Arguments {
     /// Shared padding at internal cuts, in milliseconds (0-1000).
     #[arg(long, value_parser = clap::value_parser!(u32).range(0..=1000), help_heading = "Audio")]
     vad_padding_ms: Option<u32>,
+    /// Speech start score threshold (0.5-1.0, default 0.6).
+    #[arg(long, value_parser = parse_vad_start_threshold, help_heading = "Audio")]
+    vad_start_threshold: Option<f64>,
 
     /// Audio encoder or compatible alias.
     #[arg(long, value_name = "CODEC", help_heading = "Audio")]
@@ -222,6 +225,7 @@ impl Arguments {
             || self.ffmpeg_debug.is_some()
             || self.enable_vad.is_some()
             || self.vad_padding_ms.is_some()
+            || self.vad_start_threshold.is_some()
             || self.record_debug.is_some()
             || self.hotkey_debug.is_some()
             || self.upload_debug.is_some()
@@ -273,10 +277,17 @@ impl Arguments {
         set(&mut config.ffmpeg_debug, self.ffmpeg_debug);
         set(&mut config.enable_vad, self.enable_vad);
         set(&mut config.vad_padding_ms, self.vad_padding_ms);
+        set(&mut config.vad_start_threshold, self.vad_start_threshold);
         set(&mut config.record_debug, self.record_debug);
         set(&mut config.hotkey_debug, self.hotkey_debug);
         set(&mut config.upload_debug, self.upload_debug);
     }
+}
+
+fn parse_vad_start_threshold(value: &str) -> Result<f64, String> {
+    let threshold = value.parse::<f64>().map_err(|error| error.to_string())?;
+    stt_core::config::validate_vad_start_threshold(threshold).map_err(|error| error.to_string())?;
+    Ok(threshold)
 }
 
 fn set<T>(target: &mut T, value: Option<T>) {
@@ -441,6 +452,32 @@ mod tests {
             assert!(super::Arguments::try_parse_from(["stt", "--vad-padding-ms", value]).is_err());
         }
         assert!(super::Arguments::try_parse_from(["stt", "--enable-vad"]).is_err());
+    }
+    #[test]
+    fn vad_start_threshold_override_and_range() {
+        use clap::Parser;
+        for value in ["0.5", "0.6", "1.0"] {
+            let args =
+                super::Arguments::try_parse_from(["stt", "--vad-start-threshold", value]).unwrap();
+            assert!(args.has_config_override());
+            let mut config = stt_core::Config::default();
+            args.apply(&mut config);
+            assert_eq!(config.vad_start_threshold, value.parse::<f64>().unwrap());
+            config.validate().unwrap();
+        }
+        for value in ["0", "0.499", "1.001", "NaN", "inf", "invalid"] {
+            assert!(
+                super::Arguments::try_parse_from(["stt", "--vad-start-threshold", value,]).is_err()
+            );
+        }
+        let mut config = stt_core::Config {
+            vad_start_threshold: 0.8,
+            ..Default::default()
+        };
+        super::Arguments::try_parse_from(["stt"])
+            .unwrap()
+            .apply(&mut config);
+        assert_eq!(config.vad_start_threshold, 0.8);
     }
     use clap::{CommandFactory, Parser};
 

@@ -135,6 +135,7 @@ const ENGLISH: &[(&str, &str)] = &[
     ("connectivity_failed", "Connection failed: "),
     ("ENABLE_VAD", "Voice activity detection"),
     ("VAD_PADDING_MS", "VAD padding (ms)"),
+    ("VAD_START_THRESHOLD", "VAD start threshold"),
     (
         "vad_hint",
         "Detect and remove non-speech sections; trim the original high-quality audio.",
@@ -243,6 +244,7 @@ const CHINESE: &[(&str, &str)] = &[
     ("connectivity_failed", "连接失败："),
     ("ENABLE_VAD", "语音活动检测"),
     ("VAD_PADDING_MS", "VAD 边界填充 (ms)"),
+    ("VAD_START_THRESHOLD", "VAD 启动阈值"),
     (
         "vad_hint",
         "检测并移除录音中的非语音部分；裁剪基于原始高质量音频。",
@@ -346,6 +348,7 @@ const GERMAN: &[(&str, &str)] = &[
     ("connectivity_failed", "Verbindung fehlgeschlagen: "),
     ("ENABLE_VAD", "Sprachaktivität erkennen"),
     ("VAD_PADDING_MS", "VAD-Puffer (ms)"),
+    ("VAD_START_THRESHOLD", "VAD-Startschwelle"),
     (
         "vad_hint",
         "Sprachpausen entfernen; Zuschnitt anhand des hochwertigen Originaltons.",
@@ -452,6 +455,7 @@ const JAPANESE: &[(&str, &str)] = &[
     ("connectivity_failed", "接続失敗："),
     ("ENABLE_VAD", "音声区間検出"),
     ("VAD_PADDING_MS", "VAD 余白 (ms)"),
+    ("VAD_START_THRESHOLD", "VAD 開始しきい値"),
     (
         "vad_hint",
         "非音声区間を除去します。切り出しには高品質の元音声を使用します。",
@@ -558,6 +562,7 @@ const FRENCH: &[(&str, &str)] = &[
     ("connectivity_failed", "Échec de connexion : "),
     ("ENABLE_VAD", "Détection de la voix"),
     ("VAD_PADDING_MS", "Marge VAD (ms)"),
+    ("VAD_START_THRESHOLD", "Seuil de début VAD"),
     (
         "vad_hint",
         "Supprime les passages sans parole à partir de l’audio original de haute qualité.",
